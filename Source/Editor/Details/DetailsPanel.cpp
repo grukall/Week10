@@ -35,6 +35,20 @@
 
 namespace
 {
+	// 숨긴 노드를 건너뛰되 그 아래의 노출 가능한 자식은 유지한다.
+	void CollectVisibleChildren(USceneComponent* Component, TArray<USceneComponent*>& OutChildren)
+	{
+		for (USceneComponent* Child : Component->GetAttachChildren())
+		{
+			if (!Child)
+				continue;
+			if (Child->IsHiddenInDetails())
+				CollectVisibleChildren(Child, OutChildren);
+			else
+				OutChildren.Add(Child);
+		}
+	}
+
 	// Linear로 저장된 색을 ImGui 색상 선택기로 편집한다.
 	// 선택기는 값을 그대로 화면에 그려 sRGB로 보이므로, 보여줄 때 sRGB로 인코딩하고 고른 값은 Linear로 디코딩해 저장한다.
 	// (언리얼 색상 선택기와 같은 방식. 알파는 색이 아니라 비율이라 변환하지 않는다)
@@ -1141,6 +1155,33 @@ void FDetailsPanel::Tick(float DeltaTime)
 {
 }
 
+void FDetailsPanel::SetTarget(AActor* InTargetActor)
+{
+	if (TargetActor != InTargetActor)
+	{
+		PendingDeleteComponent = nullptr;
+		EditingNameComponent = nullptr;
+		ComponentNameEditBuffer[0] = '\0';
+		bFocusNameEdit = false;
+		bIsEditingName = false;
+		PendingDroppedComponent = nullptr;
+		PendingDragComponent = nullptr;
+	}
+	TargetActor = InTargetActor;
+	TargetComponent = InTargetActor ? InTargetActor->GetRootComponent() : nullptr;
+	ExpandComponentPath(TargetComponent);
+}
+
+void FDetailsPanel::ExpandComponentPath(UActorComponent* Component)
+{
+	ComponentsToExpand.Reset();
+	if (!Component || Component->GetOwner() != TargetActor)
+		return;
+
+	for (USceneComponent* Parent = Cast<USceneComponent>(Component); Parent; Parent = Parent->GetAttachParent())
+		ComponentsToExpand.Add(Parent);
+}
+
 
 void FDetailsPanel::OnRender()
 {
@@ -1154,12 +1195,29 @@ void FDetailsPanel::OnRender()
 		while (TargetComponent && TargetComponent->IsHiddenInDetails())
 		{
 			USceneComponent* HiddenComponent = Cast<USceneComponent>(TargetComponent);
-			TargetComponent = HiddenComponent ? HiddenComponent->GetAttachParent() : nullptr;
+			if (!HiddenComponent)
+			{
+				TargetComponent = nullptr;
+				break;
+			}
+			if (USceneComponent* Parent = HiddenComponent->GetAttachParent())
+			{
+				TargetComponent = Parent;
+			}
+			else
+			{
+				TArray<USceneComponent*> VisibleChildren;
+				CollectVisibleChildren(HiddenComponent, VisibleChildren);
+				TargetComponent = VisibleChildren.IsEmpty() ? nullptr : VisibleChildren[0];
+			}
+			ExpandComponentPath(TargetComponent);
 		}
 
 		UActorComponent* SelectCandidateComponent = TargetComponent;
 
 		DrawActorHeader(TargetActor, TargetComponent);
+		if (TargetComponent != SelectCandidateComponent)
+			ExpandComponentPath(TargetComponent);
 		DrawCompoenetList(TargetActor, TargetComponent);				
 		ImGui::Separator();
 
@@ -1205,11 +1263,17 @@ void FDetailsPanel::OnRender()
 
 void FDetailsPanel::SelectComponent(UActorComponent* Component)
 {
+	if (Component && Component->GetOwner() != TargetActor)
+		return;
+
 	if (!Component)
 	{
 		TargetComponent = nullptr;
 		EditingNameComponent = nullptr;
 		bFocusNameEdit = false;
+		PendingDroppedComponent = nullptr;
+		PendingDragComponent = nullptr;
+		ComponentsToExpand.Reset();
 
 		if (Callback)
 			Callback(nullptr);
@@ -1217,6 +1281,8 @@ void FDetailsPanel::SelectComponent(UActorComponent* Component)
 		return;
 	}
 
+	if (TargetComponent != Component)
+		ExpandComponentPath(Component);
 	TargetComponent = Component;
 
 	if (Callback)
@@ -1236,10 +1302,21 @@ void FDetailsPanel::DrawCompoenetList(AActor* SelectedActor, UActorComponent*& O
 
 	USceneComponent* Root = SelectedActor->GetRootComponent();
 
-	if (Root && ImGui::CollapsingHeader("Components", ImGuiTreeNodeFlags_DefaultOpen))
+	if (!ComponentsToExpand.IsEmpty())
+		ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+	if (ImGui::CollapsingHeader("Components", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		DrawSceneComponentNode(Root, Root, OutSelectedComponent);
+		if (Root)
+			DrawSceneComponentNode(Root, Root, OutSelectedComponent);
+		// 루트에 연결되지 않은 SceneComponent도 목록에 표시한다.
+		for (UActorComponent* ActorComp : SelectedActor->GetComponents())
+		{
+			USceneComponent* SceneComponent = Cast<USceneComponent>(ActorComp);
+			if (SceneComponent && SceneComponent != Root && !SceneComponent->GetAttachParent())
+				DrawSceneComponentNode(SceneComponent, Root, OutSelectedComponent);
+		}
 	}
+	ComponentsToExpand.Reset();
 
 	ImGui::Separator();
 
@@ -1286,24 +1363,25 @@ void FDetailsPanel::DrawCompoenetList(AActor* SelectedActor, UActorComponent*& O
 
 void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneComponent* Root, UActorComponent*& OutSelectedComponent)
 {
-	// 빌보드 같은 에디터 표시용 컴포넌트는 트리에 노출하지 않는다
-	if (!Component || Component->IsHiddenInDetails())
+	if (!Component)
 		return;
 
-	// 숨겨진 자식만 있는 노드가 펼침 화살표를 갖지 않도록 노출되는 자식만 센다
-	TArray<USceneComponent*> Children;
-	for (USceneComponent* Child : Component->GetAttachChildren())
+	// 숨긴 노드만 건너뛰고 그 아래의 자식은 계속 표시한다.
+	if (Component->IsHiddenInDetails())
 	{
-		if (Child && !Child->IsHiddenInDetails())
-		{
-			Children.Add(Child);
-		}
+		TArray<USceneComponent*> VisibleChildren;
+		CollectVisibleChildren(Component, VisibleChildren);
+		for (USceneComponent* Child : VisibleChildren)
+			DrawSceneComponentNode(Child, Root, OutSelectedComponent);
+		return;
 	}
 
+	TArray<USceneComponent*> Children;
+	CollectVisibleChildren(Component, Children);
 	const bool bIsLeaf = Children.IsEmpty();
 	bIsEditingName = (EditingNameComponent == Component);
 
-	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
+	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
 	if (Component == OutSelectedComponent)
 	{
 		Flags |= ImGuiTreeNodeFlags_Selected;
@@ -1318,6 +1396,14 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 		Label += " (Root)";
 
 	ImGui::PushID(Component);
+	for (USceneComponent* ComponentToExpand : ComponentsToExpand)
+	{
+		if (ComponentToExpand == Component)
+		{
+			ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+			break;
+		}
+	}
 	const ImVec2 RowStart = ImGui::GetCursorScreenPos();
 	const float RowWidth = ImGui::GetContentRegionAvail().x;
 	const bool bOpen = ImGui::TreeNodeEx("ComponentNode", Flags, "%s", bIsEditingName ? "" : Label.c_str());
@@ -1328,6 +1414,7 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 	if (Component != Root && ImGui::BeginDragDropSource())
 	{
 		ImGui::SetDragDropPayload(EditorDragDrop::Component, &Component, sizeof(USceneComponent*));
+		ImGui::Text("%s", Component->GetName().c_str());
 		ImGui::EndDragDropSource();
 	}
 	// target: 모든 행이 가능, payload를 받아 현재 Component를 부모로 사용
@@ -1335,9 +1422,15 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 	{
 		if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Component))
 		{
-			USceneComponent* DroppedComponent = *static_cast<USceneComponent**>(Payload->Data);
-			PendingDroppedComponent = DroppedComponent;
-			PendingDragComponent = DragComponent;
+			if (Payload->DataSize == sizeof(USceneComponent*))
+			{
+				USceneComponent* DroppedComponent = *static_cast<USceneComponent**>(Payload->Data);
+				if (DroppedComponent && DroppedComponent->GetOwner() == TargetActor)
+				{
+					PendingDroppedComponent = DroppedComponent;
+					PendingDragComponent = DragComponent;
+				}
+			}
 		}
 		ImGui::EndDragDropTarget();
 	}
@@ -1413,11 +1506,18 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 
 void FDetailsPanel::TryReparent(USceneComponent* DroppedComponent, USceneComponent* DragComponent)
 {
-	if (DroppedComponent != nullptr 
+	if (TargetActor != nullptr
+		&& DroppedComponent != nullptr
+		&& DragComponent != nullptr
+		&& DroppedComponent->GetOwner() == TargetActor
+		&& DragComponent->GetOwner() == TargetActor
+		&& DroppedComponent != TargetActor->GetRootComponent()
 		&& DroppedComponent->GetAttachParent() != DragComponent
 		&& DroppedComponent != DragComponent)
 	{
 		DroppedComponent->SetupAttachment(DragComponent, EAttachmentRule::KeepWorld);
+		if (DroppedComponent->GetAttachParent() == DragComponent)
+			ExpandComponentPath(DroppedComponent);
 	}
 }
 

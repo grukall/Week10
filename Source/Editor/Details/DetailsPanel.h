@@ -29,12 +29,12 @@ public:
 
 	const char* GetPanelName() const override { return "Details"; }
 
-	void SetTarget(AActor* InTargetActor) 
-	{ 
-		TargetActor = InTargetActor;
-		TargetComponent = InTargetActor ? InTargetActor->GetRootComponent() : nullptr;
+	void SetTarget(AActor* InTargetActor);
+	void SetTargetComponent(UActorComponent* InTargetComponent)
+	{
+		TargetComponent = InTargetComponent;
+		ExpandComponentPath(InTargetComponent);
 	}
-	void SetTargetComponent(UActorComponent* InTargetComponent) { TargetComponent = InTargetComponent; }
 
 	void SetSelectionCallback(DetailsSelectionCallback InCallback) { Callback = InCallback; }
 	void SetDeleteComponentCallback(DetailsDeleteComponentCallback InCallback) { DeleteCallback = InCallback; }
@@ -58,6 +58,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11PixelShader> PreviewShader;
 	void DrawSceneComponentNode(USceneComponent* Component, USceneComponent* Root, UActorComponent*& OutSelectedComponent);
 	void TryReparent(USceneComponent* DroppedComponent, USceneComponent* DragComponent);
+	void ExpandComponentPath(UActorComponent* Component);
+	TArray<USceneComponent*> ComponentsToExpand;
 
 	UWorld* World = nullptr;
 	std::function<UWorld*()> PlayWorldQuery;
