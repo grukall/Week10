@@ -109,7 +109,7 @@ void FSettingsPanel::OnRender()
 
 	UCameraComponent* CamCom = World->GetMainCamera()->GetCameraComponent();
 
-	ImGui::SliderFloat("Move Speed", &Settings.CameraSpeed, 0.1f, 10.0f, "%.2f");
+	ImGui::SliderFloat("Move Speed", &Settings.CameraSpeed, 0.1f, 100.0f, "%.2f");
 	CamCom->SetMoveSpeed(Settings.CameraSpeed);
 
 	ImGui::SliderFloat("Rotate Sensitivity", &Settings.MouseSensitivity, 0.01f, 1.0f, "%.2f");

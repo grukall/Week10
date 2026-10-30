@@ -34,6 +34,7 @@
 #include "Component/SpotLightComponent.h"
 #include "Component/DirectionalLightComponent.h"
 #include "Component/ShapeComponent.h"
+#include "Component/DecalComponent.h"
 #include "Core/ResourcePaths.h"
 #include "Core/ProjectSettings.h"
 #include "Serialization/JsonArchive.h"
@@ -727,6 +728,14 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 			if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
 				continue;
 			Shape->DrawDebug(LineBatcher.get());
+		}
+
+		for (TObjectIterator<UDecalComponent> Decal; Decal; ++Decal)
+		{
+			if (!Decal || !Decal->GetOwner() || Decal->GetOwner()->GetWorld() != &ViewWorld)
+				continue;
+
+			Decal->DrawDebug(LineBatcher.get());
 		}
 		LineBatcher->OnRender(ViewProjection);
 	}
