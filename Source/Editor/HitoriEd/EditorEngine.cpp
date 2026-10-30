@@ -135,6 +135,12 @@ bool UEditorEngine::Init()
 	EditorUI->SetOpenProjectSettingsCallback([this]() { ProjectSettingsPanel->Open(); });
 	DebugPanel = EditorUI->AddEditorPanel<FDebugPanel>();
 	ShadowAtlasPanel = EditorUI->AddEditorPanel<FShadowAtlasPanel>();
+	SkeletalMeshViewerPanel = EditorUI->AddEditorPanel<FSkeletalMeshViewerPanel>();
+
+	FWorldContext& SkeletalMeshViewContext = CreateNewWorldContext(EWorldType::Editor);
+	SkeletalMeshViewContext.SetCurrentWorld(UWorld::CreateWorld(EWorldType::Editor, false, FName("SkeletalPreviewWorld")));
+	SkeletalPreviewWorld = SkeletalMeshViewContext.World();
+	SkeletalMeshViewerPanel->InitializeSkeletalPreview(SkeletalPreviewWorld);
 
 	//ToolbarPanel->SetPlayCallback([this]() { RequestPlaySession(); });
 	//ToolbarPanel->SetStopCallback([this]() { RequestEndPlayMap(); });
@@ -534,6 +540,12 @@ void UEditorEngine::TickWorldAndEditor(const float DeltaTime)
 	//SCOPE_CYCLE_COUNTER(STAT_UpdateAllTransforms);
 	EditorWorld->GetScene().UpdateAllTransforms();
 
+	if (SkeletalPreviewWorld)
+	{
+		SkeletalPreviewWorld->Tick(DeltaTime);
+		SkeletalPreviewWorld->GetScene().UpdateAllTransforms();
+	}
+
 	// Tick 중에 바뀐 Scene을 렌더 전에 반영
 	// 실행 중에도 반영해야 BVH에 지워진 Proxy가 남지 않는다.
 	if (PlayWorld)
@@ -546,6 +558,11 @@ void UEditorEngine::RenderViewports()
     bPIEWindowRendered = false;
     const bool bRenderPIEWindow = IsPIEInWindow() && UpdatePIEWindowTargets();
     SceneRenderer.BeginFrame();
+
+	FViewport* SkeletalPreviewViewport = SkeletalMeshViewerPanel ? SkeletalMeshViewerPanel->GetSkeletalPreviewViewport() : nullptr;
+	FEditorViewportClient* SkeletalPreviewClient = SkeletalMeshViewerPanel ? SkeletalMeshViewerPanel->GetSkeletalPreviewClient() : nullptr;
+	const bool bRenderSkeletalPreview = SkeletalMeshViewerPanel && SkeletalMeshViewerPanel->CanRenderSkeletalPreview();
+
     SceneRenderer.SetShadowCullingSettings(SettingsPanel->GetSettings().ShadowCulling);
     // 쉐도우 맵은 World의 첫 View를 그릴 때 준비되므로, 그 전에 그림자를 쓰는 View를 모두 등록한다.
     for (int32 ViewIndex = 0; ViewIndex < ViewportsPanel->GetSlotCount(); ++ViewIndex)
@@ -564,6 +581,15 @@ void UEditorEngine::RenderViewports()
         if (ViewSupportsShadows(View))
             SceneRenderer.AddShadowView(*PIEViewport->GetActiveClient()->GetWorld(), View);
     }
+	if (bRenderSkeletalPreview)
+	{
+		const FSceneView SkeletalPreview = SkeletalPreviewViewport->CreateSceneView();
+		if (ViewSupportsShadows(SkeletalPreview))
+		{
+			SceneRenderer.AddShadowView(*SkeletalPreviewViewport->GetActiveClient()->GetWorld(), SkeletalPreview);
+		}
+	}
+
     for (int32 ViewIndex = 0; ViewIndex < ViewportsPanel->GetSlotCount(); ++ViewIndex)
     {
         FViewport& Viewport = *ViewportsPanel->GetViewport(ViewIndex);
@@ -593,6 +619,20 @@ void UEditorEngine::RenderViewports()
     }
     else if (PIEPanel)
         PIEViewport->ClearSceneData();
+
+	if (bRenderSkeletalPreview)
+	{
+		SkeletalPreviewViewport->ClearSceneData();
+		SkeletalPreviewViewport->EnsureRenderTargets();
+
+		const FSceneView SkeletalPreviewView = SkeletalPreviewViewport->CreateSceneView();
+		FSceneRenderData& SkeletalPreviewData = SkeletalPreviewViewport->GetSceneRenderData();
+
+		SceneRenderer.PrepareView(*SkeletalPreviewWorld, SkeletalPreviewView, SkeletalPreviewData);
+		RenderFrame(*SkeletalPreviewViewport, *SkeletalPreviewWorld, SkeletalPreviewView, nullptr);
+		SkeletalPreviewData.ReleaseSceneReferences();
+	}
+
     SceneRenderer.EndFrame();
 }
 
@@ -1005,6 +1045,20 @@ void UEditorEngine::PreExit()
 	EndPlayMap();
 	DestroyPIEWindow();
 	SceneRenderer.EndFrame();
+
+	if (SkeletalMeshViewerPanel)
+	{
+		SkeletalMeshViewerPanel->ShutdownSkeletalPreview();
+	}
+	if (SkeletalPreviewWorld)
+	{
+		ReleaseWorldShadowResources(SkeletalPreviewWorld);
+		SkeletalPreviewWorld->ClearWorld();
+		DestroyWorldContext(SkeletalPreviewWorld);
+		delete SkeletalPreviewWorld;
+		SkeletalPreviewWorld = nullptr;
+	}
+
 	for (FWorldContext& Context : WorldList)
 		ReleaseWorldShadowResources(Context.World());
 	ViewportsPanel->Shutdown();
