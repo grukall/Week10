@@ -35,6 +35,20 @@
 
 namespace
 {
+	// 숨긴 노드를 건너뛰되 그 아래의 노출 가능한 자식은 유지한다.
+	void CollectVisibleChildren(USceneComponent* Component, TArray<USceneComponent*>& OutChildren)
+	{
+		for (USceneComponent* Child : Component->GetAttachChildren())
+		{
+			if (!Child)
+				continue;
+			if (Child->IsHiddenInDetails())
+				CollectVisibleChildren(Child, OutChildren);
+			else
+				OutChildren.Add(Child);
+		}
+	}
+
 	// Linear로 저장된 색을 ImGui 색상 선택기로 편집한다.
 	// 선택기는 값을 그대로 화면에 그려 sRGB로 보이므로, 보여줄 때 sRGB로 인코딩하고 고른 값은 Linear로 디코딩해 저장한다.
 	// (언리얼 색상 선택기와 같은 방식. 알파는 색이 아니라 비율이라 변환하지 않는다)
@@ -61,7 +75,7 @@ namespace
 	{
 		bool isValueChanged = false;
 
-		float lineHeight = GImGui->Font->LegacySize + GImGui->Style.FramePadding.y * 2.0f;
+		float lineHeight = ImGui::GetFrameHeight();
 		ImVec4 color(_color.X, _color.Y, _color.Z, _color.W);
 		ImVec2 buttonSize = { lineHeight + 2.0f , lineHeight };
 
@@ -91,50 +105,43 @@ namespace
 	{
 		ImGuiIO& io = ImGui::GetIO();
 		auto boldFont = io.Fonts->Fonts[0];
+		const ImGuiStyle& Style = ImGui::GetStyle();
+		const float RowStart = ImGui::GetCursorPosX();
+		const float AvailableWidth = ImGui::GetContentRegionAvail().x;
+		const float LabelWidth = (std::max)(_columnWidth, ImGui::CalcTextSize(_label.c_str()).x);
 
-		ImGuiTableFlags flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
-
+		ImGui::PushFont(boldFont);
+		const float ButtonWidth = ImGui::GetFrameHeight() + 2.0f;
+		const float MinInputWidth = ImGui::CalcTextSize("-0000.00").x + Style.FramePadding.x * 2.0f;
+		ImGui::PopFont();
+		const float MinAxisWidth = ButtonWidth + Style.ItemSpacing.x + MinInputWidth;
+		const float MinAxesWidth = MinAxisWidth * 3.0f + Style.ItemSpacing.x * 2.0f;
+		const bool bInline = AvailableWidth >= LabelWidth + Style.ItemSpacing.x + MinAxesWidth;
 		bool isVectorChanged = false;
 
 		ImGui::PushID(_label.c_str());
-		if (ImGui::BeginTable(_label.c_str(), 2, flags)) // 고유 ID, 열 2개, 플래그
-		{
-			// ImGuiTableColumnFlags_WidthFixed: 초기 너비 고정
-			// ImGuiTableColumnFlags_WidthStretch: 창 크기에 따라 너비 조절 (기본값)
-			ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, _columnWidth);
-			ImGui::TableSetupColumn("Content", ImGuiTableColumnFlags_WidthStretch);
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextWrapped("%s", _label.c_str());
+		if (bInline)
+			ImGui::SameLine(RowStart + LabelWidth + Style.ItemSpacing.x);
 
-			ImGui::TableNextRow();
-			ImGui::TableSetColumnIndex(0);
-			ImGui::Text(_label.c_str()); // 왼쪽 열: 레이블
-
-			ImGui::TableSetColumnIndex(1);
-			// [컨트롤러 UI 코드] // 오른쪽 열: 컨트롤러
-			ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
-			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{ 2,0 });
-			ImGui::PushFont(boldFont);
-
-			isVectorChanged |= DrawAxisControl("X", _values[0], 0.1f, 0.0f, 0.0f, _resetValue, { 0.8f, 0.1f, 0.1f, 1.0f });
-
-			ImGui::PopItemWidth();
-
+		ImGui::PushFont(boldFont);
+		ImGui::BeginGroup();
+		const float ControlsWidth = ImGui::GetContentRegionAvail().x;
+		const bool bStackAxes = ControlsWidth < MinAxesWidth;
+		const float AxisWidth = bStackAxes ? ControlsWidth : (ControlsWidth - Style.ItemSpacing.x * 2.0f) / 3.0f;
+		// 축 버튼과 간격을 제외한 나머지를 숫자 입력에 배분한다.
+		ImGui::PushItemWidth((std::max)(1.0f, AxisWidth - ButtonWidth - Style.ItemSpacing.x));
+		isVectorChanged |= DrawAxisControl("X", _values[0], 0.1f, 0.0f, 0.0f, _resetValue, { 0.8f, 0.1f, 0.1f, 1.0f });
+		if (!bStackAxes)
 			ImGui::SameLine();
-			isVectorChanged |= DrawAxisControl("Y", _values[1], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.8f, 0.1f, 1.0f });
-
-			ImGui::PopItemWidth();
-
+		isVectorChanged |= DrawAxisControl("Y", _values[1], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.8f, 0.1f, 1.0f });
+		if (!bStackAxes)
 			ImGui::SameLine();
-			isVectorChanged |= DrawAxisControl("Z", _values[2], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.1f, 0.8f, 1.0f });
-
-			ImGui::PopItemWidth();
-
-			ImGui::PopFont();
-			ImGui::PopStyleVar();
-			ImGui::EndTable();
-		}
-
-		ImGui::Columns(1);
-
+		isVectorChanged |= DrawAxisControl("Z", _values[2], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.1f, 0.8f, 1.0f });
+		ImGui::PopItemWidth();
+		ImGui::EndGroup();
+		ImGui::PopFont();
 		ImGui::PopID();
 
 		return isVectorChanged;
@@ -271,17 +278,14 @@ namespace
 
 				if (ImGui::Selectable(ItemFileName.c_str(), bSelected))
 				{
-					if (ImGui::IsItemHovered())
-					{
-						ImGui::SetTooltip("%s", ItemPath.c_str());
-					}
-
 					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
 					if (UTextRenderComponent* TextComponent = Cast<UTextRenderComponent>(Owner))
 						TextComponent->SetFont(*Itr);
 					else
 						*FontPtr = *Itr;
 				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", ItemPath.c_str());
 				ImGui::PopID();
 				if (bSelected)
 					ImGui::SetItemDefaultFocus();
@@ -333,17 +337,14 @@ namespace
 
 				if (ImGui::Selectable(Item.DisplayName.c_str(), bSelected))
 				{
-					if (ImGui::IsItemHovered())
-					{
-						ImGui::SetTooltip("%s", Item.Path.c_str());
-					}
-
 					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
 					if (UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Owner))
 						MeshComponent->SetStaticMesh(Item.Mesh);
 					else
 						*StaticMeshPtr = Item.Mesh;
 				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", Item.Path.c_str());
 				ImGui::PopID();
 				if (bSelected)
 					ImGui::SetItemDefaultFocus();
@@ -408,6 +409,8 @@ namespace
 					MeshComponent->SetMaterial(Slot, nullptr);
 					Override = nullptr;
 					Effective = MeshComponent->GetMaterial(Slot);
+					Texture = (Effective && Effective->Textures.Num() > 0) ? Effective->Textures[0] : nullptr;
+					NormalTexture = (Effective && Effective->Textures.Num() > 1) ? Effective->Textures[1] : nullptr;
 				}
 			}
 			else
@@ -461,7 +464,22 @@ namespace
 						}
 						ImGui::EndDragDropTarget();
 					}
-					ImGui::SameLine();
+					if (ImGui::GetContentRegionAvail().x >= ThumbnailSize + ImGui::GetStyle().ItemSpacing.x
+						+ ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f)
+						ImGui::SameLine();
+					ImGui::BeginDisabled(Texture == nullptr);
+					if (ImGui::SmallButton("Delete##ColorTexture"))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->Textures[0] = nullptr;
+							MeshComponent->SetMaterial(Slot, Override);
+							Texture = nullptr;
+							Effective = Override;
+						}
+					}
+					ImGui::EndDisabled();
 
 					// 2: 텍스처 경로
 					if (Texture)
@@ -509,7 +527,7 @@ namespace
 
 							if (Override)
 							{
-								if (Override->Textures.Num() == 0)
+								while (Override->Textures.Num() < 2)
 								{
 									Override->Textures.Add(nullptr);
 								}
@@ -520,7 +538,22 @@ namespace
 						}
 						ImGui::EndDragDropTarget();
 					}
-					ImGui::SameLine();
+					if (ImGui::GetContentRegionAvail().x >= ThumbnailSize + ImGui::GetStyle().ItemSpacing.x
+						+ ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f)
+						ImGui::SameLine();
+					ImGui::BeginDisabled(NormalTexture == nullptr);
+					if (ImGui::SmallButton("Delete##NormalTexture"))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->Textures[1] = nullptr;
+							MeshComponent->SetMaterial(Slot, Override);
+							NormalTexture = nullptr;
+							Effective = Override;
+						}
+					}
+					ImGui::EndDisabled();
 
 					// 4: 노말 텍스처 경로
 					if (NormalTexture)
@@ -714,8 +747,18 @@ namespace
 		void* ValuePtr = reinterpret_cast<char*>(Object) + Property.Offset;
 		const FString Label = "##" + Property.Name;
 
-		ImGui::Text(Property.Name.c_str());
-		ImGui::SameLine(220.0f);
+		const float RowStart = ImGui::GetCursorPosX();
+		const float AvailableWidth = ImGui::GetContentRegionAvail().x;
+		const float LabelWidth = AvailableWidth * 0.45f;
+		const float MinInputWidth = ImGui::CalcTextSize("-0000.00").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight();
+		const bool bInline = Property.Type != EPropertyType::Transform
+			&& ImGui::CalcTextSize(Property.Name.c_str()).x <= LabelWidth
+			&& AvailableWidth - LabelWidth - ImGui::GetStyle().ItemSpacing.x >= MinInputWidth;
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextWrapped("%s", Property.Name.c_str());
+		if (bInline)
+			ImGui::SameLine(RowStart + LabelWidth + ImGui::GetStyle().ItemSpacing.x);
 		ImGui::SetNextItemWidth(-1.0f);
 
 		bool bChanged = false;
@@ -835,9 +878,12 @@ namespace
 			// PIE 중이고 경로가 있을 때만 Reload 버튼을 보여준다
 			UWorld* ReloadWorld = (bBrowseLua && !Value->empty()) ? PlayWorld : nullptr;
 			const float ReloadButtonWidth = ReloadWorld ? ImGui::CalcTextSize("Reload").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+			const float ButtonsWidth = BrowseButtonWidth + CreateButtonWidth + ReloadButtonWidth + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+			const float ControlsRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+			const bool bInlineButtons = ImGui::GetContentRegionAvail().x >= ButtonsWidth + MinInputWidth;
 			if (bBrowseLua)
 			{
-				ImGui::SetNextItemWidth(-(BrowseButtonWidth + CreateButtonWidth + ReloadButtonWidth + ImGui::GetStyle().ItemSpacing.x * 2.0f));
+				ImGui::SetNextItemWidth(bInlineButtons ? -ButtonsWidth : -1.0f);
 			}
 
 			char Buffer[256] = {};
@@ -848,10 +894,13 @@ namespace
 				*Value = Buffer;
 			}
 			if (CustomFont) ImGui::PopFont();
+			if (bBrowseLua && ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", Value->c_str());
 
 			if (bBrowseLua)
 			{
-				ImGui::SameLine();
+				if (bInlineButtons)
+					ImGui::SameLine();
 				if (ImGui::Button(("..." + Label).c_str(), ImVec2(BrowseButtonWidth, 0.0f)))
 				{
 					const FString Picked = FEditorFileUtils::OpenScriptFileDialog();
@@ -862,7 +911,8 @@ namespace
 					}
 				}
 
-				ImGui::SameLine();
+				if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + CreateButtonWidth <= ControlsRight)
+					ImGui::SameLine();
 				if (Value->empty())
 				{
 					// template.lua를 복제해 <씬>_<액터>(_<컴포넌트>).lua를 만들고 바로 연결한다
@@ -887,7 +937,8 @@ namespace
 					// PIE 월드에서 이 파일을 쓰는 모든 액터·컴포넌트 스크립트를 다시 로드한다
 					if (ReloadWorld)
 					{
-						ImGui::SameLine();
+						if (ImGui::GetItemRectMax().x + ReloadButtonWidth <= ControlsRight)
+							ImGui::SameLine();
 						if (ImGui::Button(("Reload" + Label).c_str()))
 						{
 							if (ReloadWorld->ReloadScripts(*Value) == 0)
@@ -1136,6 +1187,33 @@ void FDetailsPanel::Tick(float DeltaTime)
 {
 }
 
+void FDetailsPanel::SetTarget(AActor* InTargetActor)
+{
+	if (TargetActor != InTargetActor)
+	{
+		PendingDeleteComponent = nullptr;
+		EditingNameComponent = nullptr;
+		ComponentNameEditBuffer[0] = '\0';
+		bFocusNameEdit = false;
+		bIsEditingName = false;
+		PendingDroppedComponent = nullptr;
+		PendingDragComponent = nullptr;
+	}
+	TargetActor = InTargetActor;
+	TargetComponent = InTargetActor ? InTargetActor->GetRootComponent() : nullptr;
+	ExpandComponentPath(TargetComponent);
+}
+
+void FDetailsPanel::ExpandComponentPath(UActorComponent* Component)
+{
+	ComponentsToExpand.Reset();
+	if (!Component || Component->GetOwner() != TargetActor)
+		return;
+
+	for (USceneComponent* Parent = Cast<USceneComponent>(Component); Parent; Parent = Parent->GetAttachParent())
+		ComponentsToExpand.Add(Parent);
+}
+
 
 void FDetailsPanel::OnRender()
 {
@@ -1149,12 +1227,29 @@ void FDetailsPanel::OnRender()
 		while (TargetComponent && TargetComponent->IsHiddenInDetails())
 		{
 			USceneComponent* HiddenComponent = Cast<USceneComponent>(TargetComponent);
-			TargetComponent = HiddenComponent ? HiddenComponent->GetAttachParent() : nullptr;
+			if (!HiddenComponent)
+			{
+				TargetComponent = nullptr;
+				break;
+			}
+			if (USceneComponent* Parent = HiddenComponent->GetAttachParent())
+			{
+				TargetComponent = Parent;
+			}
+			else
+			{
+				TArray<USceneComponent*> VisibleChildren;
+				CollectVisibleChildren(HiddenComponent, VisibleChildren);
+				TargetComponent = VisibleChildren.IsEmpty() ? nullptr : VisibleChildren[0];
+			}
+			ExpandComponentPath(TargetComponent);
 		}
 
 		UActorComponent* SelectCandidateComponent = TargetComponent;
 
 		DrawActorHeader(TargetActor, TargetComponent);
+		if (TargetComponent != SelectCandidateComponent)
+			ExpandComponentPath(TargetComponent);
 		DrawCompoenetList(TargetActor, TargetComponent);				
 		ImGui::Separator();
 
@@ -1200,11 +1295,17 @@ void FDetailsPanel::OnRender()
 
 void FDetailsPanel::SelectComponent(UActorComponent* Component)
 {
+	if (Component && Component->GetOwner() != TargetActor)
+		return;
+
 	if (!Component)
 	{
 		TargetComponent = nullptr;
 		EditingNameComponent = nullptr;
 		bFocusNameEdit = false;
+		PendingDroppedComponent = nullptr;
+		PendingDragComponent = nullptr;
+		ComponentsToExpand.Reset();
 
 		if (Callback)
 			Callback(nullptr);
@@ -1212,6 +1313,8 @@ void FDetailsPanel::SelectComponent(UActorComponent* Component)
 		return;
 	}
 
+	if (TargetComponent != Component)
+		ExpandComponentPath(Component);
 	TargetComponent = Component;
 
 	if (Callback)
@@ -1231,10 +1334,21 @@ void FDetailsPanel::DrawCompoenetList(AActor* SelectedActor, UActorComponent*& O
 
 	USceneComponent* Root = SelectedActor->GetRootComponent();
 
-	if (Root && ImGui::CollapsingHeader("Components", ImGuiTreeNodeFlags_DefaultOpen))
+	if (!ComponentsToExpand.IsEmpty())
+		ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+	if (ImGui::CollapsingHeader("Components", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		DrawSceneComponentNode(Root, Root, OutSelectedComponent);
+		if (Root)
+			DrawSceneComponentNode(Root, Root, OutSelectedComponent);
+		// 루트에 연결되지 않은 SceneComponent도 목록에 표시한다.
+		for (UActorComponent* ActorComp : SelectedActor->GetComponents())
+		{
+			USceneComponent* SceneComponent = Cast<USceneComponent>(ActorComp);
+			if (SceneComponent && SceneComponent != Root && !SceneComponent->GetAttachParent())
+				DrawSceneComponentNode(SceneComponent, Root, OutSelectedComponent);
+		}
 	}
+	ComponentsToExpand.Reset();
 
 	ImGui::Separator();
 
@@ -1281,24 +1395,25 @@ void FDetailsPanel::DrawCompoenetList(AActor* SelectedActor, UActorComponent*& O
 
 void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneComponent* Root, UActorComponent*& OutSelectedComponent)
 {
-	// 빌보드 같은 에디터 표시용 컴포넌트는 트리에 노출하지 않는다
-	if (!Component || Component->IsHiddenInDetails())
+	if (!Component)
 		return;
 
-	// 숨겨진 자식만 있는 노드가 펼침 화살표를 갖지 않도록 노출되는 자식만 센다
-	TArray<USceneComponent*> Children;
-	for (USceneComponent* Child : Component->GetAttachChildren())
+	// 숨긴 노드만 건너뛰고 그 아래의 자식은 계속 표시한다.
+	if (Component->IsHiddenInDetails())
 	{
-		if (Child && !Child->IsHiddenInDetails())
-		{
-			Children.Add(Child);
-		}
+		TArray<USceneComponent*> VisibleChildren;
+		CollectVisibleChildren(Component, VisibleChildren);
+		for (USceneComponent* Child : VisibleChildren)
+			DrawSceneComponentNode(Child, Root, OutSelectedComponent);
+		return;
 	}
 
+	TArray<USceneComponent*> Children;
+	CollectVisibleChildren(Component, Children);
 	const bool bIsLeaf = Children.IsEmpty();
 	bIsEditingName = (EditingNameComponent == Component);
 
-	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
+	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
 	if (Component == OutSelectedComponent)
 	{
 		Flags |= ImGuiTreeNodeFlags_Selected;
@@ -1313,6 +1428,14 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 		Label += " (Root)";
 
 	ImGui::PushID(Component);
+	for (USceneComponent* ComponentToExpand : ComponentsToExpand)
+	{
+		if (ComponentToExpand == Component)
+		{
+			ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+			break;
+		}
+	}
 	const ImVec2 RowStart = ImGui::GetCursorScreenPos();
 	const float RowWidth = ImGui::GetContentRegionAvail().x;
 	const bool bOpen = ImGui::TreeNodeEx("ComponentNode", Flags, "%s", bIsEditingName ? "" : Label.c_str());
@@ -1323,6 +1446,7 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 	if (Component != Root && ImGui::BeginDragDropSource())
 	{
 		ImGui::SetDragDropPayload(EditorDragDrop::Component, &Component, sizeof(USceneComponent*));
+		ImGui::Text("%s", Component->GetName().c_str());
 		ImGui::EndDragDropSource();
 	}
 	// target: 모든 행이 가능, payload를 받아 현재 Component를 부모로 사용
@@ -1330,9 +1454,15 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 	{
 		if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Component))
 		{
-			USceneComponent* DroppedComponent = *static_cast<USceneComponent**>(Payload->Data);
-			PendingDroppedComponent = DroppedComponent;
-			PendingDragComponent = DragComponent;
+			if (Payload->DataSize == sizeof(USceneComponent*))
+			{
+				USceneComponent* DroppedComponent = *static_cast<USceneComponent**>(Payload->Data);
+				if (DroppedComponent && DroppedComponent->GetOwner() == TargetActor)
+				{
+					PendingDroppedComponent = DroppedComponent;
+					PendingDragComponent = DragComponent;
+				}
+			}
 		}
 		ImGui::EndDragDropTarget();
 	}
@@ -1408,11 +1538,18 @@ void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneCom
 
 void FDetailsPanel::TryReparent(USceneComponent* DroppedComponent, USceneComponent* DragComponent)
 {
-	if (DroppedComponent != nullptr 
+	if (TargetActor != nullptr
+		&& DroppedComponent != nullptr
+		&& DragComponent != nullptr
+		&& DroppedComponent->GetOwner() == TargetActor
+		&& DragComponent->GetOwner() == TargetActor
+		&& DroppedComponent != TargetActor->GetRootComponent()
 		&& DroppedComponent->GetAttachParent() != DragComponent
 		&& DroppedComponent != DragComponent)
 	{
 		DroppedComponent->SetupAttachment(DragComponent, EAttachmentRule::KeepWorld);
+		if (DroppedComponent->GetAttachParent() == DragComponent)
+			ExpandComponentPath(DroppedComponent);
 	}
 }
 
