@@ -44,6 +44,16 @@ constexpr ImU32 SplitterHoverColor = IM_COL32(255, 192, 0, 255);
 constexpr const char* CameraPresetLabels[] = {
 	"Perspective", "Ortho (Current)", "Top", "Bottom", "Front", "Back", "Left", "Right"};
 
+float CalcComboWidth(const char* const* Items, int32 Count)
+{
+	float TextWidth = 0.0f;
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		TextWidth = std::max(TextWidth, ImGui::CalcTextSize(Items[Index]).x);
+	}
+	return TextWidth + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f;
+}
+
 // Stat Overlay
 constexpr float StatOverlayMargin = 8.0f;
 constexpr float StatOverlayPadding = 6.0f;
@@ -281,16 +291,28 @@ void FViewportsPanel::OnRender()
 			continue;
 		ImGui::SetCursorScreenPos({ ClientOrigin.x + GetSlotRect(ViewIndex).X + 8.0f, ClientOrigin.y + GetSlotRect(ViewIndex).Y + 8.0f});
 		ImGui::PushID(100 + ViewIndex);
+		ImGui::BeginGroup();
+		const float ToolbarRight = ClientOrigin.x + GetSlotRect(ViewIndex).X + GetSlotRect(ViewIndex).Width - 8.0f;
+		bool bFirstToolbarItem = true;
+		auto PlaceToolbarItem = [&](float Width)
+		{
+			if (!bFirstToolbarItem && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + Width <= ToolbarRight)
+			{
+				ImGui::SameLine();
+			}
+			bFirstToolbarItem = false;
+		};
         if (const FEditorViewportClient* EditorClient = GetEditorClient(ViewIndex))
         {
             int SelectedPreset = static_cast<int>(EditorClient->GetCameraPreset());
-            ImGui::SetNextItemWidth(120.0f);
+            const float Width = CalcComboWidth(CameraPresetLabels, IM_ARRAYSIZE(CameraPresetLabels));
+            PlaceToolbarItem(Width);
+            ImGui::SetNextItemWidth(Width);
             if (ImGui::Combo("##CameraPreset", &SelectedPreset, CameraPresetLabels, IM_ARRAYSIZE(CameraPresetLabels)))
             {
                 PendingCameraPresetViewIndex = ViewIndex;
                 PendingCameraPreset = static_cast<EViewportCameraPreset>(SelectedPreset);
             }
-            ImGui::SameLine();
         }
 		// 조명·셰이딩 모델은 Lit일 때만 보인다.
 		{
@@ -298,36 +320,39 @@ void FViewportsPanel::OnRender()
 			bool bChanged = false;
 
 			int ViewMode = static_cast<int>(RenderMode.ViewMode);
-			ImGui::SetNextItemWidth(100.0f);
+			const float ViewModeWidth = CalcComboWidth(ViewModeNames, IM_ARRAYSIZE(ViewModeNames));
+			PlaceToolbarItem(ViewModeWidth);
+			ImGui::SetNextItemWidth(ViewModeWidth);
 			if (ImGui::Combo("##ViewMode", &ViewMode, ViewModeNames, IM_ARRAYSIZE(ViewModeNames)))
 			{
 				RenderMode.ViewMode = static_cast<EViewMode>(ViewMode);
 				bChanged = true;
 			}
-			ImGui::SameLine();
 
 			if (RenderMode.ViewMode == EViewMode::Lit)
 			{
 				const char* LightingModelLabels[] = {"Lambert", "Phong", "Blinn-Phong"};
 				int LightingModel = static_cast<int>(RenderMode.LightingModel);
-				ImGui::SetNextItemWidth(110.0f);
+				const float LightingModelWidth = CalcComboWidth(LightingModelLabels, IM_ARRAYSIZE(LightingModelLabels));
+				PlaceToolbarItem(LightingModelWidth);
+				ImGui::SetNextItemWidth(LightingModelWidth);
 				if (ImGui::Combo("##LightingModel", &LightingModel, LightingModelLabels, IM_ARRAYSIZE(LightingModelLabels)))
 				{
 					RenderMode.LightingModel = static_cast<ELightingModel>(LightingModel);
 					bChanged = true;
 				}
 				ImGui::SetItemTooltip("Lighting Model");
-				ImGui::SameLine();
 
 				int ShadingModel = static_cast<int>(RenderMode.ShadingModel);
-				ImGui::SetNextItemWidth(90.0f);
+				const float ShadingModelWidth = CalcComboWidth(ShadingModelNames, IM_ARRAYSIZE(ShadingModelNames));
+				PlaceToolbarItem(ShadingModelWidth);
+				ImGui::SetNextItemWidth(ShadingModelWidth);
 				if (ImGui::Combo("##ShadingModel", &ShadingModel, ShadingModelNames, IM_ARRAYSIZE(ShadingModelNames)))
 				{
 					RenderMode.ShadingModel = static_cast<EShadingModel>(ShadingModel);
 					bChanged = true;
 				}
 				ImGui::SetItemTooltip("Shading Model");
-				ImGui::SameLine();
 			}
 
 			if (bChanged)
@@ -335,6 +360,7 @@ void FViewportsPanel::OnRender()
 		}
 		if (PanelLayout == EViewportPanelLayout::Quad && !bSlotMaximized)
 		{
+			PlaceToolbarItem(ImGui::CalcTextSize("Maximize").x + ImGui::GetStyle().FramePadding.x * 2.0f);
 			if (ImGui::SmallButton("Maximize"))
 			{
 				bRequestedMaximized = true;
@@ -342,24 +368,29 @@ void FViewportsPanel::OnRender()
 				bHasMaximizeRequest = true;
 			}
 		}
-		else if (PanelLayout == EViewportPanelLayout::Quad && ViewIndex == MaximizedSlotIndex && ImGui::SmallButton("Restore Quad"))
+		else if (PanelLayout == EViewportPanelLayout::Quad && ViewIndex == MaximizedSlotIndex)
 		{
-			bRequestedMaximized = false;
-			RequestedMaximizedSlotIndex = ViewIndex;
-			bHasMaximizeRequest = true;
+			PlaceToolbarItem(ImGui::CalcTextSize("Restore Quad").x + ImGui::GetStyle().FramePadding.x * 2.0f);
+			if (ImGui::SmallButton("Restore Quad"))
+			{
+				bRequestedMaximized = false;
+				RequestedMaximizedSlotIndex = ViewIndex;
+				bHasMaximizeRequest = true;
+			}
 		}
 		if (ViewIndex == GetEditorViewIndex() &&
 			FStatOverlay::IsAnyEnabled() &&
 			(FStatOverlay::IsEnabled(EStatFlags::Profile) ||
 				FStatRegistry::Find(EditorStats::STAT_PickingTime)))
 		{
-			ImGui::SameLine();
+			PlaceToolbarItem(ImGui::CalcTextSize("Reset Stats").x + ImGui::GetStyle().FramePadding.x * 2.0f);
 			if (ImGui::SmallButton("Reset Stats"))
 				FStatRegistry::Reset();
 			StatResetButtonMin = ImGui::GetItemRectMin();
 			StatResetButtonMax = ImGui::GetItemRectMax();
 			bStatResetButtonVisible = true;
 		}
+		ImGui::EndGroup();
 		ImGui::PopID();
 	}
 
