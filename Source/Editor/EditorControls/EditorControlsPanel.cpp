@@ -60,7 +60,7 @@ void FEditorControlsPanel::OnRender()
 	ImGui::Dummy(ImVec2(0.0f, SectionGap));
 	ImGui::SeparatorText("Actor Spawn");
 
-	const float SpawnButtonWidth = 70.0f;
+	const float SpawnButtonWidth = ImGui::CalcTextSize("Spawn").x + ImGui::GetStyle().FramePadding.x * 2.0f;
 
 	char CountText[32];
 	std::snprintf(

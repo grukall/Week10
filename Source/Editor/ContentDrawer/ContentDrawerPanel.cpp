@@ -57,9 +57,11 @@ void FContentDrawerPanel::OnRender()
 	ImGui::BeginChild("AssetGridView");
 	{
 		// 그리드 레이아웃 계산
+		const ImGuiStyle& style = ImGui::GetStyle();
 		float padding = 16.0f;
 		float thumbnailSize = 80.0f;
-		float cellSize = thumbnailSize + padding;
+		// 버튼과 테이블 셀의 좌우 패딩까지 포함한 열 너비
+		float cellSize = thumbnailSize + style.FramePadding.x * 2.0f + style.CellPadding.x * 2.0f + padding;
 		float panelWidth = ImGui::GetContentRegionAvail().x;
 		int ColumnCount = static_cast<int>(panelWidth / cellSize);
 		if (ColumnCount < 1) ColumnCount = 1;
