@@ -409,6 +409,8 @@ namespace
 					MeshComponent->SetMaterial(Slot, nullptr);
 					Override = nullptr;
 					Effective = MeshComponent->GetMaterial(Slot);
+					Texture = (Effective && Effective->Textures.Num() > 0) ? Effective->Textures[0] : nullptr;
+					NormalTexture = (Effective && Effective->Textures.Num() > 1) ? Effective->Textures[1] : nullptr;
 				}
 			}
 			else
@@ -462,7 +464,22 @@ namespace
 						}
 						ImGui::EndDragDropTarget();
 					}
-					ImGui::SameLine();
+					if (ImGui::GetContentRegionAvail().x >= ThumbnailSize + ImGui::GetStyle().ItemSpacing.x
+						+ ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f)
+						ImGui::SameLine();
+					ImGui::BeginDisabled(Texture == nullptr);
+					if (ImGui::SmallButton("Delete##ColorTexture"))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->Textures[0] = nullptr;
+							MeshComponent->SetMaterial(Slot, Override);
+							Texture = nullptr;
+							Effective = Override;
+						}
+					}
+					ImGui::EndDisabled();
 
 					// 2: 텍스처 경로
 					if (Texture)
@@ -510,7 +527,7 @@ namespace
 
 							if (Override)
 							{
-								if (Override->Textures.Num() == 0)
+								while (Override->Textures.Num() < 2)
 								{
 									Override->Textures.Add(nullptr);
 								}
@@ -521,7 +538,22 @@ namespace
 						}
 						ImGui::EndDragDropTarget();
 					}
-					ImGui::SameLine();
+					if (ImGui::GetContentRegionAvail().x >= ThumbnailSize + ImGui::GetStyle().ItemSpacing.x
+						+ ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f)
+						ImGui::SameLine();
+					ImGui::BeginDisabled(NormalTexture == nullptr);
+					if (ImGui::SmallButton("Delete##NormalTexture"))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->Textures[1] = nullptr;
+							MeshComponent->SetMaterial(Slot, Override);
+							NormalTexture = nullptr;
+							Effective = Override;
+						}
+					}
+					ImGui::EndDisabled();
 
 					// 4: 노말 텍스처 경로
 					if (NormalTexture)
