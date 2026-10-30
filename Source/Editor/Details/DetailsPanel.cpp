@@ -61,7 +61,7 @@ namespace
 	{
 		bool isValueChanged = false;
 
-		float lineHeight = GImGui->Font->LegacySize + GImGui->Style.FramePadding.y * 2.0f;
+		float lineHeight = ImGui::GetFrameHeight();
 		ImVec4 color(_color.X, _color.Y, _color.Z, _color.W);
 		ImVec2 buttonSize = { lineHeight + 2.0f , lineHeight };
 
@@ -91,50 +91,43 @@ namespace
 	{
 		ImGuiIO& io = ImGui::GetIO();
 		auto boldFont = io.Fonts->Fonts[0];
+		const ImGuiStyle& Style = ImGui::GetStyle();
+		const float RowStart = ImGui::GetCursorPosX();
+		const float AvailableWidth = ImGui::GetContentRegionAvail().x;
+		const float LabelWidth = (std::max)(_columnWidth, ImGui::CalcTextSize(_label.c_str()).x);
 
-		ImGuiTableFlags flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
-
+		ImGui::PushFont(boldFont);
+		const float ButtonWidth = ImGui::GetFrameHeight() + 2.0f;
+		const float MinInputWidth = ImGui::CalcTextSize("-0000.00").x + Style.FramePadding.x * 2.0f;
+		ImGui::PopFont();
+		const float MinAxisWidth = ButtonWidth + Style.ItemSpacing.x + MinInputWidth;
+		const float MinAxesWidth = MinAxisWidth * 3.0f + Style.ItemSpacing.x * 2.0f;
+		const bool bInline = AvailableWidth >= LabelWidth + Style.ItemSpacing.x + MinAxesWidth;
 		bool isVectorChanged = false;
 
 		ImGui::PushID(_label.c_str());
-		if (ImGui::BeginTable(_label.c_str(), 2, flags)) // 고유 ID, 열 2개, 플래그
-		{
-			// ImGuiTableColumnFlags_WidthFixed: 초기 너비 고정
-			// ImGuiTableColumnFlags_WidthStretch: 창 크기에 따라 너비 조절 (기본값)
-			ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, _columnWidth);
-			ImGui::TableSetupColumn("Content", ImGuiTableColumnFlags_WidthStretch);
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextWrapped("%s", _label.c_str());
+		if (bInline)
+			ImGui::SameLine(RowStart + LabelWidth + Style.ItemSpacing.x);
 
-			ImGui::TableNextRow();
-			ImGui::TableSetColumnIndex(0);
-			ImGui::Text(_label.c_str()); // 왼쪽 열: 레이블
-
-			ImGui::TableSetColumnIndex(1);
-			// [컨트롤러 UI 코드] // 오른쪽 열: 컨트롤러
-			ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
-			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{ 2,0 });
-			ImGui::PushFont(boldFont);
-
-			isVectorChanged |= DrawAxisControl("X", _values[0], 0.1f, 0.0f, 0.0f, _resetValue, { 0.8f, 0.1f, 0.1f, 1.0f });
-
-			ImGui::PopItemWidth();
-
+		ImGui::PushFont(boldFont);
+		ImGui::BeginGroup();
+		const float ControlsWidth = ImGui::GetContentRegionAvail().x;
+		const bool bStackAxes = ControlsWidth < MinAxesWidth;
+		const float AxisWidth = bStackAxes ? ControlsWidth : (ControlsWidth - Style.ItemSpacing.x * 2.0f) / 3.0f;
+		// 축 버튼과 간격을 제외한 나머지를 숫자 입력에 배분한다.
+		ImGui::PushItemWidth((std::max)(1.0f, AxisWidth - ButtonWidth - Style.ItemSpacing.x));
+		isVectorChanged |= DrawAxisControl("X", _values[0], 0.1f, 0.0f, 0.0f, _resetValue, { 0.8f, 0.1f, 0.1f, 1.0f });
+		if (!bStackAxes)
 			ImGui::SameLine();
-			isVectorChanged |= DrawAxisControl("Y", _values[1], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.8f, 0.1f, 1.0f });
-
-			ImGui::PopItemWidth();
-
+		isVectorChanged |= DrawAxisControl("Y", _values[1], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.8f, 0.1f, 1.0f });
+		if (!bStackAxes)
 			ImGui::SameLine();
-			isVectorChanged |= DrawAxisControl("Z", _values[2], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.1f, 0.8f, 1.0f });
-
-			ImGui::PopItemWidth();
-
-			ImGui::PopFont();
-			ImGui::PopStyleVar();
-			ImGui::EndTable();
-		}
-
-		ImGui::Columns(1);
-
+		isVectorChanged |= DrawAxisControl("Z", _values[2], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.1f, 0.8f, 1.0f });
+		ImGui::PopItemWidth();
+		ImGui::EndGroup();
+		ImGui::PopFont();
 		ImGui::PopID();
 
 		return isVectorChanged;
@@ -271,17 +264,14 @@ namespace
 
 				if (ImGui::Selectable(ItemFileName.c_str(), bSelected))
 				{
-					if (ImGui::IsItemHovered())
-					{
-						ImGui::SetTooltip("%s", ItemPath.c_str());
-					}
-
 					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
 					if (UTextRenderComponent* TextComponent = Cast<UTextRenderComponent>(Owner))
 						TextComponent->SetFont(*Itr);
 					else
 						*FontPtr = *Itr;
 				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", ItemPath.c_str());
 				ImGui::PopID();
 				if (bSelected)
 					ImGui::SetItemDefaultFocus();
@@ -333,17 +323,14 @@ namespace
 
 				if (ImGui::Selectable(Item.DisplayName.c_str(), bSelected))
 				{
-					if (ImGui::IsItemHovered())
-					{
-						ImGui::SetTooltip("%s", Item.Path.c_str());
-					}
-
 					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
 					if (UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Owner))
 						MeshComponent->SetStaticMesh(Item.Mesh);
 					else
 						*StaticMeshPtr = Item.Mesh;
 				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", Item.Path.c_str());
 				ImGui::PopID();
 				if (bSelected)
 					ImGui::SetItemDefaultFocus();
@@ -714,8 +701,18 @@ namespace
 		void* ValuePtr = reinterpret_cast<char*>(Object) + Property.Offset;
 		const FString Label = "##" + Property.Name;
 
-		ImGui::Text(Property.Name.c_str());
-		ImGui::SameLine(220.0f);
+		const float RowStart = ImGui::GetCursorPosX();
+		const float AvailableWidth = ImGui::GetContentRegionAvail().x;
+		const float LabelWidth = AvailableWidth * 0.45f;
+		const float MinInputWidth = ImGui::CalcTextSize("-0000.00").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight();
+		const bool bInline = Property.Type != EPropertyType::Transform
+			&& ImGui::CalcTextSize(Property.Name.c_str()).x <= LabelWidth
+			&& AvailableWidth - LabelWidth - ImGui::GetStyle().ItemSpacing.x >= MinInputWidth;
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextWrapped("%s", Property.Name.c_str());
+		if (bInline)
+			ImGui::SameLine(RowStart + LabelWidth + ImGui::GetStyle().ItemSpacing.x);
 		ImGui::SetNextItemWidth(-1.0f);
 
 		bool bChanged = false;
@@ -835,9 +832,12 @@ namespace
 			// PIE 중이고 경로가 있을 때만 Reload 버튼을 보여준다
 			UWorld* ReloadWorld = (bBrowseLua && !Value->empty()) ? PlayWorld : nullptr;
 			const float ReloadButtonWidth = ReloadWorld ? ImGui::CalcTextSize("Reload").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+			const float ButtonsWidth = BrowseButtonWidth + CreateButtonWidth + ReloadButtonWidth + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+			const float ControlsRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+			const bool bInlineButtons = ImGui::GetContentRegionAvail().x >= ButtonsWidth + MinInputWidth;
 			if (bBrowseLua)
 			{
-				ImGui::SetNextItemWidth(-(BrowseButtonWidth + CreateButtonWidth + ReloadButtonWidth + ImGui::GetStyle().ItemSpacing.x * 2.0f));
+				ImGui::SetNextItemWidth(bInlineButtons ? -ButtonsWidth : -1.0f);
 			}
 
 			char Buffer[256] = {};
@@ -848,10 +848,13 @@ namespace
 				*Value = Buffer;
 			}
 			if (CustomFont) ImGui::PopFont();
+			if (bBrowseLua && ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", Value->c_str());
 
 			if (bBrowseLua)
 			{
-				ImGui::SameLine();
+				if (bInlineButtons)
+					ImGui::SameLine();
 				if (ImGui::Button(("..." + Label).c_str(), ImVec2(BrowseButtonWidth, 0.0f)))
 				{
 					const FString Picked = FEditorFileUtils::OpenScriptFileDialog();
@@ -862,7 +865,8 @@ namespace
 					}
 				}
 
-				ImGui::SameLine();
+				if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + CreateButtonWidth <= ControlsRight)
+					ImGui::SameLine();
 				if (Value->empty())
 				{
 					// template.lua를 복제해 <씬>_<액터>(_<컴포넌트>).lua를 만들고 바로 연결한다
@@ -887,7 +891,8 @@ namespace
 					// PIE 월드에서 이 파일을 쓰는 모든 액터·컴포넌트 스크립트를 다시 로드한다
 					if (ReloadWorld)
 					{
-						ImGui::SameLine();
+						if (ImGui::GetItemRectMax().x + ReloadButtonWidth <= ControlsRight)
+							ImGui::SameLine();
 						if (ImGui::Button(("Reload" + Label).c_str()))
 						{
 							if (ReloadWorld->ReloadScripts(*Value) == 0)
