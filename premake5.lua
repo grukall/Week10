@@ -218,6 +218,7 @@ project "HitoriEditor"
 		"Source/Programs/**.h",
 		"Source/Programs/**.cpp",
 		"Source/Editor/**.rc",   -- 창·exe 아이콘
+		"Resources/Hitori.manifest", -- 파일 경로의 프로세스 코드페이지를 UTF-8로 통일
 	}
 
 	includedirs
@@ -288,6 +289,7 @@ project "HitoriGame"
 	{
 		"Source/Game/**.h",
 		"Source/Game/**.cpp",
+		"Resources/Hitori.manifest",
 	}
 
 	includedirs
