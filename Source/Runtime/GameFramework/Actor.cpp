@@ -7,6 +7,7 @@
 #include "Component/ExponentialHeightFogComponent.h"
 #include "Component/LightComponentBase.h"
 #include "Component/ShapeComponent.h"
+#include "Component/DecalComponent.h"
 #include "Core/EngineLog.h"
 #include "UObject/Object.h"
 #include "Script/LuaScriptInstance.h"
@@ -603,6 +604,10 @@ void AActor::DestroyComponent(UActorComponent* Component)
     else if (ULightComponentBase* Light = Cast<ULightComponentBase>(Component))
     {
         World->GetScene().RemoveLight(Light);
+    }
+    else if (UDecalComponent* Decal = Cast<UDecalComponent>(Component))
+    {
+        World->GetScene().RemoveDecal(Decal);
     }
     RemoveOwnedComponent(Component);
 

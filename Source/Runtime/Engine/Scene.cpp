@@ -1,6 +1,8 @@
 ﻿#include "EnginePCH.h"
 #include "Scene.h"
 #include "LightSceneProxy.h"
+#include "Render/DeferredDecalSceneProxy.h"
+#include "Component/DecalComponent.h"
 #include "Render/ColorWorkflow.h"
 #include "Render/ShadowFrameData.h"
 
@@ -220,6 +222,58 @@ void FScene::BuildLightingConstants(FLightingConstants& Out, const TArray<FShado
 	}
 }
 
+void FScene::AddDecal(UDecalComponent* Component)
+{
+	if (!Component || Component->SceneProxy) return;
+
+	FDeferredDecalSceneProxy* Proxy = Component->CreateSceneProxy();
+	if (!Proxy) return;
+
+	Proxy->Scene = this;
+	Component->SceneProxy = Proxy;
+
+	Proxy->UpdateFromComponent();
+	Decals.Add(Proxy);
+}
+
+void FScene::RemoveDecal(UDecalComponent *Component)
+{
+	if (!Component || !Component->SceneProxy) return;
+
+	FDeferredDecalSceneProxy* Proxy = Component->SceneProxy;
+
+	const int32 Index = Decals.Find(Proxy);
+
+	if (Index != INDEX_NONE) Decals.RemoveAt(Index);
+	if (Proxy->bQueuedForUpdate)
+	{
+		const int32 Found = DirtyDecals.Find(Proxy);
+		if (Found != INDEX_NONE) DirtyDecals.RemoveAtSwap(Found);
+	}
+
+	Component->SceneProxy = nullptr;
+	delete Proxy;
+}
+
+void FScene::RemoveAllDecals()
+{
+	for (FDeferredDecalSceneProxy* Proxy : Decals)
+	{
+		Proxy->GetComponent()->SceneProxy = nullptr;
+		delete Proxy;
+	}
+
+	Decals.Reset();
+	DirtyDecals.Reset();
+}
+
+void FScene::MarkDecalDirty(FDeferredDecalSceneProxy * Proxy)
+{
+	if (Proxy->bQueuedForUpdate) return;
+	Proxy->bQueuedForUpdate = true;
+	DirtyDecals.Add(Proxy);
+}
+
 void FScene::UpdateAllTransforms()
 {
 	for (FPrimitiveSceneProxy* Proxy : RenderStateDirtyProxies)
@@ -256,6 +310,13 @@ void FScene::UpdateAllTransforms()
 		Proxy->bQueuedForUpdate = false;
 	}
 	DirtyLights.Reset();
+
+	for (FDeferredDecalSceneProxy* Proxy : DirtyDecals)
+	{
+		Proxy->UpdateFromComponent();
+		Proxy->bQueuedForUpdate = false;
+	}
+	DirtyDecals.Reset();
 
 	//const int32 Count = Proxies.Num();
 	//for (int32 i = 0; i < Count; ++i)

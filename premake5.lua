@@ -149,6 +149,18 @@ project "Scripts"
 		"Assets/Scripts/**.lua",
 	}
 
+-- 쉐이더·아이콘 등 엔진 리소스를 Solution Explorer에서 열어 보기 위한 프로젝트. 컴파일하지 않는다(Utility).
+-- Scripts와 같은 이유로 location을 리소스 폴더로 둔다.
+project "Resources"
+	location "Resources"
+	kind     "Utility"
+	CommonSettings()
+
+	files
+	{
+		"Resources/**",
+	}
+
 
 -- 런타임. 에디터를 모른다. include 경로에 Source/Editor가 없는 것이 그 방벽이다.
 -- location이 소스 루트와 같아야 "모든 파일 표시"에서 폴더가 보인다.

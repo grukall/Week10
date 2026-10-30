@@ -39,10 +39,16 @@ public:
 	// Ambient·Directional은 마지막으로 등록된 것 하나, Point·Spot은 MaxPointLights·MaxSpotLights개까지 담는다.
 	void BuildLightingConstants(FLightingConstants& Out, const TArray<FShadowRequestPerLight>* ShadowRequestsPerLight = nullptr, const TArray<FShadowRequestPerLight>* DirectionalShadowRequests = nullptr) const;
 
+	//===================
+	//Decal
+	void AddDecal(class UDecalComponent* Component);
+	void RemoveDecal(class UDecalComponent* Component);
+	void RemoveAllDecals();
+	void MarkDecalDirty(struct FDeferredDecalSceneProxy* Proxy);
+	//===================
+
 	void UpdateAllTransforms();
-
 	void BuildBVH();
-
 	void MarkDirty(FPrimitiveSceneProxy* Proxy);
 	void MarkRenderStateDirty(FPrimitiveSceneProxy* Proxy);
 
@@ -66,6 +72,9 @@ public:
 	TArray<FLightSceneProxy*> DirtyLights;
 	// 프록시에 담긴 라이트 색이 어느 작업 흐름으로 계산됐는지. ColorWorkflow::bLinear와 다르면 전부 다시 계산한다.
 	bool bLightColorsLinear = true;
+
+	TArray<FDeferredDecalSceneProxy*> Decals;
+	TArray<FDeferredDecalSceneProxy*> DirtyDecals;
 
 	// 컬링 결과로 프록시를 바로 내보내 컴포넌트를 역참조하지 않는다. 경계는 Build/Refit 때만 계산한다.
 	TBVH<FPrimitiveSceneProxy*> BVH{

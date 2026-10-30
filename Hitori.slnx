@@ -15,6 +15,8 @@
   </Project>
   <Project Path="Source\ThirdParty\ImGui\ImGui.vcxproj" Id="C0FF640D-2C14-8DBE-F595-301E616989EF">
   </Project>
+  <Project Path="Resources\Resources.vcxproj" Id="000BCD17-6C75-818E-B5B3-3234215D5FE3">
+  </Project>
   <Project Path="Assets\Scripts\Scripts.vcxproj" Id="4D6F1AE8-B94E-9983-C266-245A2EC5FFE4">
   </Project>
 </Solution>

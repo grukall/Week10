@@ -14,7 +14,8 @@ enum class EMaterialParamLayout
 	None,
 	StaticMesh,
 	ParticleSubUV,
-	Billboard
+	Billboard,
+	Decal
 };
 
 struct FStaticMeshMaterialParams
@@ -33,6 +34,11 @@ struct FBillboardMaterialParams
 	FLinearColor TintColor = FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
 };
 static_assert(sizeof(FBillboardMaterialParams) == 16);
+
+struct FDecalMaterialParams
+{
+};
+static_assert(sizeof(FDecalMaterialParams) == 1);
 
 class UMaterial : public UMaterialInterface
 {
