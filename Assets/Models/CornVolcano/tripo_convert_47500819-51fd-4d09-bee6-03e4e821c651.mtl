@@ -1,0 +1,16 @@
+# Blender 5.0.1 MTL File: 'None'
+# www.blender.org
+
+newmtl tripo_mat_47500819-51fd-4d09-bee6-03e4e821c651
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd cornvolcano_basecolor.JPEG
+map_Ns cornvolcano_roughness.JPEG
+map_Pr cornvolcano_roughness.JPEG
+map_refl cornvolcano_metallic.JPEG
+map_Pm cornvolcano_metallic.JPEG
+map_Bump -bm 1.000000 cornvolcano_normal.JPEG

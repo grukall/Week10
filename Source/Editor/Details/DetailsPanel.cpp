@@ -1,0 +1,1551 @@
+﻿#include "EnginePCH.h"
+#include "Editor/Details/DetailsPanel.h"
+
+#include "Render/ShadowResources.h"
+#include "Render/RenderCommand.h"
+#include "Component/LightComponent.h"
+#include "Component/DirectionalLightComponent.h"
+#include "Component/PointLightComponent.h"
+#include "Component/BoxComponent.h"
+#include "Component/SphereComponent.h"
+#include "Component/CapsuleComponent.h"
+#include <d3dcompiler.h>
+#include "imgui_internal.h"
+#include "Editor/HitoriEd/EditorDragDrop.h"
+#include "Editor/HitoriEd/EditorResourcePaths.h"
+#include "Editor/HitoriEd/EditorFileUtils.h"
+#include "Component/PrimitiveComponent.h"
+#include "Component/StaticMeshComponent.h"
+#include "Component/TextRenderComponent.h"
+#include "Component/ParticleSubUVComponent.h"
+#include "Component/RotatingMovementComponent.h"
+#include "Component/ProjectileMovementComponent.h"
+#include "Component/SpringArmComponent.h"
+#include "Component/KnockbackComponent.h"
+#include "Component/HitSquashComponent.h"
+#include "Asset/AssetManager.h"
+#include "Render/Material.h"
+#include "Render/Texture2D.h"
+#include "Text/Font.h"
+#include "UObject/UObjectIterator.h"
+#include "GameFramework/Actor.h"
+#include "Core/EngineLog.h"
+#include <algorithm>
+
+
+namespace
+{
+	// Linear로 저장된 색을 ImGui 색상 선택기로 편집한다.
+	// 선택기는 값을 그대로 화면에 그려 sRGB로 보이므로, 보여줄 때 sRGB로 인코딩하고 고른 값은 Linear로 디코딩해 저장한다.
+	// (언리얼 색상 선택기와 같은 방식. 알파는 색이 아니라 비율이라 변환하지 않는다)
+	bool ColorEditLinear(const char* Label, float InOutLinear[4], ImGuiColorEditFlags Flags = 0)
+	{
+		float Display[4] = {
+			FLinearColor::LinearToSRGB(InOutLinear[0]),
+			FLinearColor::LinearToSRGB(InOutLinear[1]),
+			FLinearColor::LinearToSRGB(InOutLinear[2]),
+			InOutLinear[3]
+		};
+
+		if (!ImGui::ColorEdit4(Label, Display, Flags))
+			return false;
+
+		InOutLinear[0] = FLinearColor::SRGBToLinear(Display[0]);
+		InOutLinear[1] = FLinearColor::SRGBToLinear(Display[1]);
+		InOutLinear[2] = FLinearColor::SRGBToLinear(Display[2]);
+		InOutLinear[3] = Display[3];
+		return true;
+	}
+
+	bool DrawAxisControl(const FString& _label, float& _value, float _speed, float _minValue, float _maxValue, float _resetValue, FVector4 _color)
+	{
+		bool isValueChanged = false;
+
+		float lineHeight = GImGui->Font->LegacySize + GImGui->Style.FramePadding.y * 2.0f;
+		ImVec4 color(_color.X, _color.Y, _color.Z, _color.W);
+		ImVec2 buttonSize = { lineHeight + 2.0f , lineHeight };
+
+		// 각 버튼의 색상 설정
+		ImGui::PushStyleColor(ImGuiCol_Button, color);
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ color.x + 0.1f, color.y + 0.1f, color.z + 0.1f, 1.0f });
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{ color.x - 0.1f, color.y - 0.1f, color.z - 0.1f, 1.0f });
+
+		// 굵은 폰트 적용
+		if (ImGui::Button(_label.c_str(), buttonSize))
+		{
+			_value = _resetValue;
+			isValueChanged = true;
+		}
+		ImGui::PopStyleColor(3);
+
+		// 드래그 슬라이더
+		ImGui::SameLine();
+		std::string dragID = "##" + _label;
+		isValueChanged |= ImGui::DragFloat(dragID.c_str(), &_value, _speed, _minValue, _maxValue, "%.2f");
+
+		return isValueChanged;
+
+	}
+
+	bool DrawVector3Controller(const FString& _label, float* _values, float _resetValue, float _columnWidth)
+	{
+		ImGuiIO& io = ImGui::GetIO();
+		auto boldFont = io.Fonts->Fonts[0];
+
+		ImGuiTableFlags flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
+
+		bool isVectorChanged = false;
+
+		ImGui::PushID(_label.c_str());
+		if (ImGui::BeginTable(_label.c_str(), 2, flags)) // 고유 ID, 열 2개, 플래그
+		{
+			// ImGuiTableColumnFlags_WidthFixed: 초기 너비 고정
+			// ImGuiTableColumnFlags_WidthStretch: 창 크기에 따라 너비 조절 (기본값)
+			ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, _columnWidth);
+			ImGui::TableSetupColumn("Content", ImGuiTableColumnFlags_WidthStretch);
+
+			ImGui::TableNextRow();
+			ImGui::TableSetColumnIndex(0);
+			ImGui::Text(_label.c_str()); // 왼쪽 열: 레이블
+
+			ImGui::TableSetColumnIndex(1);
+			// [컨트롤러 UI 코드] // 오른쪽 열: 컨트롤러
+			ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{ 2,0 });
+			ImGui::PushFont(boldFont);
+
+			isVectorChanged |= DrawAxisControl("X", _values[0], 0.1f, 0.0f, 0.0f, _resetValue, { 0.8f, 0.1f, 0.1f, 1.0f });
+
+			ImGui::PopItemWidth();
+
+			ImGui::SameLine();
+			isVectorChanged |= DrawAxisControl("Y", _values[1], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.8f, 0.1f, 1.0f });
+
+			ImGui::PopItemWidth();
+
+			ImGui::SameLine();
+			isVectorChanged |= DrawAxisControl("Z", _values[2], 0.1f, 0.0f, 0.0f, _resetValue, { 0.1f, 0.1f, 0.8f, 1.0f });
+
+			ImGui::PopItemWidth();
+
+			ImGui::PopFont();
+			ImGui::PopStyleVar();
+			ImGui::EndTable();
+		}
+
+		ImGui::Columns(1);
+
+		ImGui::PopID();
+
+		return isVectorChanged;
+	}
+
+	// FRotator의 V는 (Pitch, Yaw, Roll) 순서지만 엔진은 Roll=X, Pitch=Y, Yaw=Z축이므로
+	// X/Y/Z 칸이 실제 회전축과 맞도록 재배열해 편집한다.
+	bool DrawRotatorAsXYZ(const FString& _label, FRotator& _rotator)
+	{
+		float Euler[3] = { _rotator.Roll, _rotator.Pitch, _rotator.Yaw };
+		const bool isChanged = DrawVector3Controller(_label, Euler, 0.0f, 55.0f);
+		if (isChanged)
+		{
+			_rotator.Roll = Euler[0];
+			_rotator.Pitch = Euler[1];
+			_rotator.Yaw = Euler[2];
+		}
+		return isChanged;
+	}
+
+	void DrawTextureSlot(UMaterial** MaterialPtr, int32 SlotIndex)
+	{
+		const float ThumbnailSize = 64.0f;
+
+		UMaterial* Material = *MaterialPtr;
+		UTexture2D* Texture = nullptr;
+		if (Material && SlotIndex < static_cast<int32>(Material->Textures.Num()))
+		{
+			Texture = Material->Textures[SlotIndex];
+		}
+
+		ImGui::PushID(SlotIndex);
+
+		if (Texture && Texture->GetResource())
+		{
+			ImGui::Image(
+				(ImTextureID)Texture->GetResource()->GetRawSRV(),
+				{ ThumbnailSize, ThumbnailSize });
+		}
+		else
+		{
+			ImGui::Button("Empty", { ThumbnailSize, ThumbnailSize });
+		}
+
+		// 바로 위 위젯이 드롭을 받는다
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Texture))
+			{
+				UTexture2D* DroppedTexture = *static_cast<UTexture2D**>(Payload->Data);
+
+				// 머티리얼이 없으면 기본 머티리얼에서 시작한다
+				if (!Material)
+				{
+					Material = UMaterial::CreateInstance(UAssetManager::GetAssetByPath<UMaterial>("DefaultMaterial"));
+					*MaterialPtr = Material;
+				}
+				// 공유 에셋이면 지금 복제한다.
+				// 이 시점까지 미루면 손대지 않은 오브젝트는 계속 공유 에셋을 쓴다.
+				else if (Material->bIsInstance == false)
+				{
+					Material = UMaterial::CreateInstance(Material);
+					*MaterialPtr = Material;
+				}
+
+				if (Material)
+				{
+					// 슬롯이 배열 범위 밖이면 그 자리까지 늘려 준다
+					while (static_cast<int32>(Material->Textures.Num()) <= SlotIndex)
+					{
+						Material->Textures.Add(nullptr);
+					}
+
+					Material->Textures[SlotIndex] = DroppedTexture;
+					Texture = DroppedTexture;
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
+
+		ImGui::SameLine();
+
+		ImGui::BeginGroup();
+		ImGui::Text("Slot %d", SlotIndex);
+
+		if (Texture)
+		{
+			ImGui::TextWrapped("%s", Texture->GetPath().c_str());
+		}
+		else
+		{
+			ImGui::TextDisabled("(비어 있음)");
+		}
+		ImGui::EndGroup();
+
+		ImGui::PopID();
+	}
+
+	FString GetAssetDisplayName(const FString& Path)
+	{
+		fs::path AssetPath(Path);
+		if (AssetPath.stem() == "Atlas")
+		{
+			return AssetPath.parent_path().filename().string();
+		}
+		return AssetPath.stem().string();
+	}
+
+	void DrawFontSlot(UObject* Owner, UFont** FontPtr)
+	{
+		UFont* Current = *FontPtr;
+
+		FString CurrentPath = Current ? Current->GetPath() : "";
+		FString CurrentFileName = Current ? GetAssetDisplayName(CurrentPath) : "None";
+
+		ImGui::SetNextItemWidth(-1.0f);
+
+		bool bOpen = ImGui::BeginCombo("##Font", CurrentFileName.c_str());
+		if (ImGui::IsItemHovered() && Current)
+		{
+			ImGui::SetTooltip("%s", CurrentPath.c_str());
+		}
+
+		if (bOpen)
+		{
+			for (TObjectIterator<UFont> Itr; Itr; ++Itr)
+			{
+				bool bSelected = (*Itr == Current);
+
+				FString ItemPath = Itr->GetPath();
+				FString ItemFileName = GetAssetDisplayName(ItemPath);
+
+				ImGui::PushID(*Itr);
+
+				if (ImGui::Selectable(ItemFileName.c_str(), bSelected))
+				{
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::SetTooltip("%s", ItemPath.c_str());
+					}
+
+					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
+					if (UTextRenderComponent* TextComponent = Cast<UTextRenderComponent>(Owner))
+						TextComponent->SetFont(*Itr);
+					else
+						*FontPtr = *Itr;
+				}
+				ImGui::PopID();
+				if (bSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+			ImGui::EndCombo();
+		}
+	}
+
+	void DrawMeshSlot(UObject* Owner, UStaticMesh** StaticMeshPtr)
+	{
+		UStaticMesh* Current = *StaticMeshPtr;
+
+		FString CurrentPath = Current ? Current->GetPath() : "";
+		FString CurrentFileName = Current ? GetAssetDisplayName(CurrentPath) : "None";
+
+		ImGui::SetNextItemWidth(-1.0f);
+
+		bool bOpen = ImGui::BeginCombo("##StaticMesh", CurrentFileName.c_str());
+		if (ImGui::IsItemHovered() && Current)
+		{
+			ImGui::SetTooltip("%s", CurrentPath.c_str());
+		}
+
+		if (bOpen)
+		{
+			struct FMeshItem
+			{
+				FString DisplayName;
+				FString Path;
+				UStaticMesh* Mesh;
+			};
+
+			TArray<FMeshItem> Items;
+			for (TObjectIterator<UStaticMesh> Itr; Itr; ++Itr)
+			{
+				FString ItemPath = Itr->GetPath();
+				Items.Add({ GetAssetDisplayName(ItemPath), ItemPath, *Itr });
+			}
+			std::sort(Items.begin(), Items.end(), [](const FMeshItem& A, const FMeshItem& B)
+			{
+				return _stricmp(A.DisplayName.c_str(), B.DisplayName.c_str()) < 0;
+			});
+
+			for (const FMeshItem& Item : Items)
+			{
+				bool bSelected = (Item.Mesh == Current);
+
+				ImGui::PushID(Item.Mesh);
+
+				if (ImGui::Selectable(Item.DisplayName.c_str(), bSelected))
+				{
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::SetTooltip("%s", Item.Path.c_str());
+					}
+
+					// 메모리를 직접 바꾸지 않고 SetFont를 거친다
+					if (UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(Owner))
+						MeshComponent->SetStaticMesh(Item.Mesh);
+					else
+						*StaticMeshPtr = Item.Mesh;
+				}
+				ImGui::PopID();
+				if (bSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+			ImGui::EndCombo();
+		}
+	}
+
+	UMaterial* EnsureMaterialOverride(UMeshComponent* MeshComponent, int32 Slot, UMaterial* Effective, UMaterial* Override)
+	{
+		// 이 컴포넌트 전용 인스턴스가 아니면 지금 적용 중인 머티리얼을 복제해서 덮어쓰기로 만든다.
+		// 메시의 머티리얼은 같은 메시를 쓰는 모든 액터가 공유하므로 직접 고치면 안 된다.
+		if (Override && Override->bIsInstance)	return Override;
+
+		UMaterial* Source = Effective ? Effective : UAssetManager::GetAssetByPath<UMaterial>("DefaultMaterial");
+
+		Override = UMaterial::CreateInstance(Source);
+		MeshComponent->SetMaterial(Slot, Override);
+
+		return Override;
+	}
+
+	// 메시 컴포넌트의 머티리얼 슬롯을 한 줄씩 그린다.
+	// 텍스처를 드롭하면 그 슬롯의 덮어쓰기에 반영하고, 메시 에셋의 머티리얼은 건드리지 않는다.
+	void DrawMaterialSlots(UMeshComponent* MeshComponent)
+	{
+		const int32 NumSlots = MeshComponent->GetNumMaterials();
+		if (NumSlots <= 0)
+		{
+			return;
+		}
+
+		if (!ImGui::CollapsingHeader("Materials", ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			return;
+		}
+
+		const float ThumbnailSize = 64.0f;
+
+		// 메쉬 내의 매터리얼 별 Slot 순회
+		for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+		{
+			ImGui::PushID(Slot);
+
+			FString SlotLabel = std::format("[{}] {}", Slot, MeshComponent->GetMaterialSlotName(Slot));
+			bool bOpen = ImGui::TreeNode(SlotLabel.c_str());
+
+			UMaterial* Override = MeshComponent->GetOverrideMaterial(Slot);
+			UMaterial* Effective = MeshComponent->GetMaterial(Slot);
+			UTexture2D* Texture = (Effective && Effective->Textures.Num() > 0) ? Effective->Textures[0] : nullptr;
+			UTexture2D* NormalTexture = (Effective && Effective->Textures.Num() > 1) ? Effective->Textures[1] : nullptr;
+
+			ImGui::SameLine();
+
+			if (Override)
+			{
+				ImGui::TextDisabled("Override");
+				ImGui::SameLine();
+
+				if (ImGui::SmallButton("Reset"))
+				{
+					MeshComponent->SetMaterial(Slot, nullptr);
+					Override = nullptr;
+					Effective = MeshComponent->GetMaterial(Slot);
+				}
+			}
+			else
+			{
+				ImGui::TextDisabled("Default");
+			}
+
+			if (bOpen)
+			{
+				if (ImGui::BeginTable("MaterialProperties", 2))
+				{
+					ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+					ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+					ImGui::TableNextRow();
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Texture");
+
+					ImGui::TableSetColumnIndex(1);
+
+					// 1: 텍스처 썸네일
+					if (Texture && Texture->GetResource())
+					{
+						ImGui::Image((ImTextureID)Texture->GetResource()->GetRawSRV(), { ThumbnailSize, ThumbnailSize });
+						if (ImGui::IsItemHovered())
+						{
+							ImGui::SetTooltip("%s", Texture->GetPath().c_str());
+						}
+					}
+					else
+					{
+						ImGui::Button("Empty", { ThumbnailSize, ThumbnailSize });
+					}
+					if (ImGui::BeginDragDropTarget())
+					{
+						if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Texture))
+						{
+							UTexture2D* DroppedTexture = *static_cast<UTexture2D**>(Payload->Data);
+							Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+
+							if (Override)
+							{
+								if (Override->Textures.Num() == 0)
+								{
+									Override->Textures.Add(nullptr);
+								}
+								Override->Textures[0] = DroppedTexture;
+								Texture = DroppedTexture;
+								Effective = Override;
+							}
+						}
+						ImGui::EndDragDropTarget();
+					}
+					ImGui::SameLine();
+
+					// 2: 텍스처 경로
+					if (Texture)
+					{
+						fs::path Path(Texture->GetPath());
+						FString FileName = Path.filename().string();
+
+						ImGui::TextWrapped("%s", FileName.c_str());
+						if (ImGui::IsItemHovered())
+						{
+							ImGui::SetTooltip("%s", Texture->GetPath().c_str());
+						}
+					}
+					else
+					{
+						ImGui::TextDisabled("(Empty)");
+					}
+
+					ImGui::TableNextRow();
+
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("NormalTexture");
+
+					ImGui::TableSetColumnIndex(1);
+
+					// 3: 노말 텍스처 썸네일
+					if (NormalTexture && NormalTexture->GetResource())
+					{
+						ImGui::Image((ImTextureID)NormalTexture->GetResource()->GetRawSRV(), { ThumbnailSize, ThumbnailSize });
+						if (ImGui::IsItemHovered())
+						{
+							ImGui::SetTooltip("%s", NormalTexture->GetPath().c_str());
+						}
+					}
+					else
+					{
+						ImGui::Button("EmptyNormal", { ThumbnailSize, ThumbnailSize });
+					}
+					if (ImGui::BeginDragDropTarget())
+					{
+						if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Texture))
+						{
+							UTexture2D* DroppedNormalTexture = *static_cast<UTexture2D**>(Payload->Data);
+							Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+
+							if (Override)
+							{
+								if (Override->Textures.Num() == 0)
+								{
+									Override->Textures.Add(nullptr);
+								}
+								Override->Textures[1] = DroppedNormalTexture;
+								NormalTexture = DroppedNormalTexture;
+								Effective = Override;
+							}
+						}
+						ImGui::EndDragDropTarget();
+					}
+					ImGui::SameLine();
+
+					// 4: 노말 텍스처 경로
+					if (NormalTexture)
+					{
+						fs::path Path(NormalTexture->GetPath());
+						FString FileName = Path.filename().string();
+
+						ImGui::TextWrapped("%s", FileName.c_str());
+						if (ImGui::IsItemHovered())
+						{
+							ImGui::SetTooltip("%s", NormalTexture->GetPath().c_str());
+						}
+					}
+					else
+					{
+						ImGui::TextDisabled("(Empty)");
+					}
+
+					ImGui::TableNextRow();
+
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Flip Green");
+
+					ImGui::TableSetColumnIndex(1);
+
+					bool bTempFlipGreen = Effective ? Effective->bFlipNormalGreen : false;
+					ImGui::BeginDisabled(NormalTexture == nullptr);
+					if (ImGui::Checkbox("##FlipNormalGreen", &bTempFlipGreen))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->bFlipNormalGreen = bTempFlipGreen;
+							Effective = Override;
+						}
+					}
+					ImGui::EndDisabled();
+					if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+					{
+						ImGui::SetTooltip("OpenGL(Y+) 규칙 노멀맵이면 켠다");
+					}
+
+					ImGui::TableNextRow();
+
+					// 5: Base Color
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Base Color");
+
+					ImGui::TableSetColumnIndex(1);
+					ImGui::SetNextItemWidth(-1.0f);
+
+					// BaseColor는 셰이더가 Linear로 쓰므로 선택기에서 sRGB로 보여주고 Linear로 저장한다
+					FLinearColor TempColor = Effective ? Effective->BaseColor : FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
+					if (ColorEditLinear("##BaseColor", &TempColor.R))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->BaseColor = TempColor;
+							Effective = Override;
+						}
+					}
+
+					ImGui::TableNextRow();
+
+					// 6: UV Scroll Speed
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("UV Scroll");
+
+					ImGui::TableSetColumnIndex(1);
+					ImGui::SetNextItemWidth(-1.0f);
+
+					FVector2 TempUVScrollSpeed = Effective ? Effective->UVScrollSpeed : FVector2();
+					if (ImGui::DragFloat2("##UVScrollSpeed", &TempUVScrollSpeed.X, 0.01f))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->UVScrollSpeed = TempUVScrollSpeed;
+							Effective = Override;
+						}
+					}
+
+					ImGui::TableNextRow();
+
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Shininess");
+
+					ImGui::TableSetColumnIndex(1);
+					ImGui::SetNextItemWidth(-1.0f);
+
+					float TempShininess = Effective ? Effective->Shininess : 32.0f;
+					if (ImGui::DragFloat("##Shininess", &TempShininess, 1.0f, 1.0f, 1024.0f))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->Shininess = TempShininess;
+							Effective = Override;
+						}
+					}
+
+					ImGui::TableNextRow();
+
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Specular Color");
+
+					ImGui::TableSetColumnIndex(1);
+					ImGui::SetNextItemWidth(-1.0f);
+
+					FLinearColor TempSpecular = Effective ? Effective->SpecularColor : FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
+					if (ColorEditLinear("##SpecularColor", &TempSpecular.R, ImGuiColorEditFlags_NoAlpha))
+					{
+						Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+						if (Override)
+						{
+							Override->SpecularColor = TempSpecular;
+							Effective = Override;
+						}
+					}
+
+					ImGui::TableNextRow();
+
+					// 7: Sampler State
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Sampler");
+
+					ImGui::TableSetColumnIndex(1);
+					ImGui::SetNextItemWidth(-1.0f);
+
+					const char* SamplerItems[] = { "Linear Clamp", "Linear Wrap" };
+					int SamplerIndex = Effective ? static_cast<int>(Effective->SamplerState) : static_cast<int>(ESamplerState::LinearClamp);
+					if (ImGui::BeginCombo("##SamplerState", SamplerItems[SamplerIndex]))
+					{
+						for (int i = 0; i < IM_ARRAYSIZE(SamplerItems); ++i)
+						{
+							if (ImGui::Selectable(SamplerItems[i], SamplerIndex == i))
+							{
+								Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+								if (Override)
+								{
+									Override->SamplerState = static_cast<ESamplerState>(i);
+									Effective = Override;
+								}
+							}
+						}
+						ImGui::EndCombo();
+					}
+
+					ImGui::TableNextRow();
+
+					// 8: Blend State
+					ImGui::TableSetColumnIndex(0);
+					ImGui::Text("Blend Mode");
+
+					ImGui::TableSetColumnIndex(1);
+					ImGui::SetNextItemWidth(-1.0f);
+
+					const char* BlendItems[] = { "Opaque", "Alpha Blend" };
+					int BlendIndex = Effective ? static_cast<int>(Effective->BlendState) : static_cast<int>(EBlendState::Opaque);
+					if (ImGui::BeginCombo("##BlendState", BlendItems[BlendIndex]))
+					{
+						for (int i = 0; i < IM_ARRAYSIZE(BlendItems); ++i)
+						{
+							if (ImGui::Selectable(BlendItems[i], BlendIndex == i))
+							{
+								Override = EnsureMaterialOverride(MeshComponent, Slot, Effective, Override);
+								if (Override)
+								{
+									Override->SetBlendState(static_cast<EBlendState>(i));
+									Effective = Override;
+								}
+							}
+						}
+						ImGui::EndCombo();
+					}
+
+					ImGui::EndTable();
+				}
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+
+			ImGui::Separator();
+		}
+	}
+
+	// UClass에 등록된 프로퍼티를 타입에 맞는 위젯으로 그린다
+	void DrawProperty(UObject* Object, const FProperty& Property, ImFont* CustomFont, UWorld* PlayWorld)
+	{
+		void* ValuePtr = reinterpret_cast<char*>(Object) + Property.Offset;
+		const FString Label = "##" + Property.Name;
+
+		ImGui::Text(Property.Name.c_str());
+		ImGui::SameLine(220.0f);
+		ImGui::SetNextItemWidth(-1.0f);
+
+		bool bChanged = false;
+
+		switch (Property.Type)
+		{
+		case EPropertyType::Float:
+			bChanged = ImGui::DragFloat(Label.c_str(), static_cast<float*>(ValuePtr), 0.1f);
+			break;
+		case EPropertyType::Int:
+		{
+			const auto* Directional = Cast<UDirectionalLightComponent>(Object);
+			if (Directional && Property.Name == "CascadeCount")
+			{
+				ImGui::Text("%u (CSM)", ShadowCascadeCount);
+				break;
+			}
+			if (Directional && Directional->UsesCSM() && Property.Name == "ShadowMapResolution")
+			{
+				ImGui::Text("%u (CSM)", ShadowCascadeResolution);
+				break;
+			}
+			ULightComponent* Light = Property.Name == "ShadowMapResolution" ? Cast<ULightComponent>(Object) : nullptr;
+			if (Light)
+			{
+				constexpr int Resolutions[] = { 256, 512, 1024, 2048 };
+				const char* Items[] = { "256", "512", "1024", "2048" };
+				const bool bLocal = Cast<UPointLightComponent>(Object) != nullptr;
+				const int ItemCount = bLocal ? 3 : IM_ARRAYSIZE(Items);
+				const uint32 MaxResolution = bLocal ? std::min(Light->GetShadowMapResolution(), 1024u) : Light->GetShadowMapResolution();
+				int Selected = 0;
+				for (int Index = 0; Index < ItemCount; ++Index)
+					if (Resolutions[Index] == static_cast<int>(MaxResolution)) Selected = Index;
+				if (ImGui::Combo(Label.c_str(), &Selected, Items, ItemCount))
+				{
+					*static_cast<int*>(ValuePtr) = Resolutions[Selected];
+					bChanged = true;
+				}
+				if (bLocal && ImGui::IsItemHovered())
+					ImGui::SetTooltip("Maximum tile size. Screen ratio selects this size, 1/2 or 1/4 (minimum 256).");
+			}
+			else if (Property.Name == "ShadowFilterMode" && Cast<ULightComponent>(Object))
+			{
+				// ULightComponent::ShadowFilterMode와 셰이더 SHADOW_FILTER_*의 순서와 같다.
+				const char* Items[] = { "PCF 2x2 (Hardware)", "PCF 3x3 (Point)", "PCF 5x5 (Point)", "PCF 5x5 (Comparison)", "PCSS" };
+				int Selected = static_cast<int>(Cast<ULightComponent>(Object)->GetShadowFilterMode());
+				if (ImGui::Combo(Label.c_str(), &Selected, Items, IM_ARRAYSIZE(Items)))
+				{
+					*static_cast<int*>(ValuePtr) = Selected;
+					bChanged = true;
+				}
+			}
+			else
+				bChanged = ImGui::DragInt(Label.c_str(), static_cast<int*>(ValuePtr), 1.0f);
+			break;
+		}
+		case EPropertyType::Bool:
+			bChanged = ImGui::Checkbox(Label.c_str(), static_cast<bool*>(ValuePtr));
+			break;
+		case EPropertyType::Vector:
+		{
+			FVector* Value = static_cast<FVector*>(ValuePtr);
+			bChanged = ImGui::DragFloat3(Label.c_str(), Value->V, 0.1f);
+			break;
+		}
+		case EPropertyType::Rotator:
+		{
+			FRotator* Value = static_cast<FRotator*>(ValuePtr);
+			// Transform의 Rotation과 같은 X/Y/Z 축 순서로 보여준다.
+			float Euler[3] = { Value->Roll, Value->Pitch, Value->Yaw };
+			if (ImGui::DragFloat3(Label.c_str(), Euler, 0.1f))
+			{
+				Value->Roll = Euler[0];
+				Value->Pitch = Euler[1];
+				Value->Yaw = Euler[2];
+			}
+			break;
+		}
+
+
+		case EPropertyType::Vector4:
+		{
+			FVector4* Value = static_cast<FVector4*>(ValuePtr);
+			bChanged = ImGui::DragFloat4(Label.c_str(), &Value->X, 0.1f);
+			break;
+		}
+
+		case EPropertyType::ByteColor:
+		{
+			// FColor는 메모리가 BGRA라 ImGui(RGBA float)에 직접 넘기지 않고 옮겨 담아 편집한다
+			FColor* Value = static_cast<FColor*>(ValuePtr);
+			float Rgba[4] = { Value->R / 255.0f, Value->G / 255.0f, Value->B / 255.0f, Value->A / 255.0f };
+			if (ImGui::ColorEdit4(Label.c_str(), Rgba))
+			{
+				auto ToByte = [](float V) { return static_cast<uint8>(FMath::Clamp(V, 0.0f, 1.0f) * 255.0f + 0.5f); };
+				*Value = FColor(ToByte(Rgba[0]), ToByte(Rgba[1]), ToByte(Rgba[2]), ToByte(Rgba[3]));
+				bChanged = true;
+			}
+			break;
+		}
+		case EPropertyType::LinearColor:
+		{
+			// 1을 넘는 HDR 값도 편집할 수 있게 한다
+			FLinearColor* Value = static_cast<FLinearColor*>(ValuePtr);
+			bChanged = ColorEditLinear(Label.c_str(), &Value->R, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+			break;
+		}
+		case EPropertyType::String:
+		{
+			FString* Value = static_cast<FString*>(ValuePtr);
+
+			// 파일 선택 버튼 자리를 남기고 입력칸을 줄인다
+			const bool bBrowseLua = Property.HasAnyFlags(CPF_LuaScriptPath);
+			const float BrowseButtonWidth = ImGui::CalcTextSize("...").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+			// 경로가 있으면 Edit, 없으면 Create. 글자가 바뀌어도 칸이 흔들리지 않게 긴 쪽 폭으로 고정한다
+			const float CreateButtonWidth = (std::max)(ImGui::CalcTextSize("Create").x, ImGui::CalcTextSize("Edit").x) + ImGui::GetStyle().FramePadding.x * 2.0f;
+			// PIE 중이고 경로가 있을 때만 Reload 버튼을 보여준다
+			UWorld* ReloadWorld = (bBrowseLua && !Value->empty()) ? PlayWorld : nullptr;
+			const float ReloadButtonWidth = ReloadWorld ? ImGui::CalcTextSize("Reload").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+			if (bBrowseLua)
+			{
+				ImGui::SetNextItemWidth(-(BrowseButtonWidth + CreateButtonWidth + ReloadButtonWidth + ImGui::GetStyle().ItemSpacing.x * 2.0f));
+			}
+
+			char Buffer[256] = {};
+			strncpy_s(Buffer, Value->c_str(), sizeof(Buffer) - 1);
+			if (CustomFont) ImGui::PushFont(CustomFont);
+			if (ImGui::InputText(Label.c_str(), Buffer, sizeof(Buffer)))
+			{
+				*Value = Buffer;
+			}
+			if (CustomFont) ImGui::PopFont();
+
+			if (bBrowseLua)
+			{
+				ImGui::SameLine();
+				if (ImGui::Button(("..." + Label).c_str(), ImVec2(BrowseButtonWidth, 0.0f)))
+				{
+					const FString Picked = FEditorFileUtils::OpenScriptFileDialog();
+					if (!Picked.empty())
+					{
+						*Value = Picked;
+						bChanged = true;
+					}
+				}
+
+				ImGui::SameLine();
+				if (Value->empty())
+				{
+					// template.lua를 복제해 <씬>_<액터>(_<컴포넌트>).lua를 만들고 바로 연결한다
+					if (ImGui::Button(("Create" + Label).c_str(), ImVec2(CreateButtonWidth, 0.0f)))
+					{
+						const FString Created = FEditorFileUtils::CreateScriptFile(Object);
+						if (!Created.empty())
+						{
+							*Value = Created;
+							bChanged = true;
+						}
+					}
+				}
+				else
+				{
+					// 실행 중인 Visual Studio에서 파일을 열고 포커스를 옮긴다
+					if (ImGui::Button(("Edit" + Label).c_str(), ImVec2(CreateButtonWidth, 0.0f)))
+					{
+						FEditorFileUtils::OpenScriptInEditor(*Value);
+					}
+
+					// PIE 월드에서 이 파일을 쓰는 모든 액터·컴포넌트 스크립트를 다시 로드한다
+					if (ReloadWorld)
+					{
+						ImGui::SameLine();
+						if (ImGui::Button(("Reload" + Label).c_str()))
+						{
+							if (ReloadWorld->ReloadScripts(*Value) == 0)
+								HTR_LOG(Warning, "[Lua] {} : 다시 로드한 스크립트가 없습니다", *Value);
+						}
+					}
+				}
+			}
+			break;
+		}
+		case EPropertyType::Name:
+		{
+			FName* Value = static_cast<FName*>(ValuePtr);
+
+			// 타이핑할 때마다 FName을 만들면 중간 문자열이 이름 테이블에 쌓이므로 입력을 마쳤을 때만 반영한다
+			char Buffer[256] = {};
+			strncpy_s(Buffer, Value->ToString().c_str(), sizeof(Buffer) - 1);
+			if (CustomFont) ImGui::PushFont(CustomFont);
+			ImGui::InputText(Label.c_str(), Buffer, sizeof(Buffer));
+			if (ImGui::IsItemDeactivatedAfterEdit())
+			{
+				*Value = FName(Buffer);
+				bChanged = true;
+			}
+			if (CustomFont) ImGui::PopFont();
+			break;
+		}
+		case EPropertyType::Transform:
+		{
+			FTransform* Value = static_cast<FTransform*>(ValuePtr);
+
+			ImGui::NewLine();
+
+			FTransform Transform = *Value;
+			bool bChange = false;
+
+			bChanged |= DrawVector3Controller("Location", Value->Location.V, 0.0f, 55.0f);
+			bChanged |= DrawRotatorAsXYZ("Rotation", Value->Rotation);
+			bChanged |= DrawVector3Controller("Scale", Value->Scale.V, 1.0f, 55.0f);
+
+			//if (bChange)
+			//{
+			//	// 씬 컴포넌트면 SetTransform을 거치고, 아니면 값을 직접 쓴다
+			//	if (USceneComponent* SceneComponent = Cast<USceneComponent>(Object))
+			//	{
+			//		SceneComponent->SetTransform(Transform);
+			//	}
+			//	else
+			//	{
+			//		*Value = Transform;
+			//	}
+			//}
+			break;
+		}
+		case EPropertyType::Object:
+		{
+			UObject** ObjPtr = static_cast<UObject**>(ValuePtr);
+
+			if (Property.Class == UMaterial::StaticClass())
+			{
+				DrawTextureSlot(reinterpret_cast<UMaterial**>(ObjPtr), 0);
+			}
+			else if (Property.Class == UFont::StaticClass())
+			{
+				DrawFontSlot(Object, reinterpret_cast<UFont**>(ObjPtr));
+			}
+			else if (Property.Class == UStaticMesh::StaticClass())
+			{
+				DrawMeshSlot(Object, reinterpret_cast<UStaticMesh**>(ObjPtr));
+			}
+			break;
+		}
+		default:
+			ImGui::TextDisabled("(Unsupported)");
+			break;
+		}
+
+		if (bChanged)
+		{
+			Object->PostEditChangeProperty(Property);
+		}
+	}
+
+	// 클래스 계층을 따라 올라가며 각 단계의 프로퍼티를 표시
+	void DrawProperties(UObject* Object, ImFont* CustomFont, UWorld* PlayWorld)
+	{
+		if (!Object)
+		{
+			return;
+		}
+
+		TArray<UClass*> ClassChain;
+		for (UClass* Class = Object->GetClass(); Class; Class = Class->Super)
+		{
+			ClassChain.Add(Class);
+		}
+
+		// 기반 클래스부터 표시
+		for (auto It = ClassChain.rbegin(); It != ClassChain.rend(); ++It)
+		{
+			UClass* Class = *It;
+
+			// 노출할 프로퍼티가 하나도 없으면 헤더도 그리지 않는다
+			bool bHasVisibleProperty = false;
+			for (const FProperty& Property : Class->GetProperties())
+			{
+				if (Property.HasAnyFlags(CPF_Edit))
+				{
+					bHasVisibleProperty = true;
+					break;
+				}
+			}
+			if (!bHasVisibleProperty)
+			{
+				continue;
+			}
+
+			ImGui::PushID(Class->Name.c_str());
+			if (ImGui::CollapsingHeader(Class->Name.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				for (const FProperty& Property : Class->GetProperties())
+				{
+					if (!Property.HasAnyFlags(CPF_Edit))
+					{
+						continue;
+					}
+
+					const bool bReadOnly = Property.HasAnyFlags(CPF_EditConst);
+					if (bReadOnly) ImGui::BeginDisabled();
+					DrawProperty(Object, Property, CustomFont, PlayWorld);
+					if (bReadOnly) ImGui::EndDisabled();
+				}
+			}
+			ImGui::PopID();
+		}
+	}
+
+	void DrawActorHeader(AActor* Actor, UActorComponent*& OutSelectedComponent)
+	{
+		if (!Actor) { return; }
+
+		static char ComponentNameInputBuf[256] = {};
+
+		ImGui::Text("Actor: %s", Actor->GetName().c_str());
+		ImGui::Text("UUID: %u", Actor->GetUUID());
+
+		if (ImGui::Button("Add Component"))
+		{
+			ImGui::OpenPopup("AddComponentPopup");
+		}
+
+		if (ImGui::BeginPopup("AddComponentPopup"))
+		{
+			ImGui::Text("Component Name:");
+			ImGui::SameLine();
+			ImGui::InputText("##Component Name", ComponentNameInputBuf, sizeof(ComponentNameInputBuf));
+			if (ImGui::MenuItem("StaticMesh Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UStaticMeshComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Text Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UTextRenderComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("ParticleSubUV Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UParticleSubUVComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Rotating Movememnt Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(URotatingMovementComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Projectile Movement Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UProjectileMovementComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Box Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UBoxComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Sphere Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(USphereComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Capsule Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UCapsuleComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("SpringArm Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(USpringArmComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("Knockback Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UKnockbackComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("HitSquash Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(UHitSquashComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+}
+
+bool FDetailsPanel::Init()
+{
+	ImGuiIO& io = ImGui::GetIO();
+
+	io.Fonts->AddFontDefault();
+
+	const char* fontPath = EditorResourcePaths::UIFontPretendard;
+	float fontSize = 15.0f;
+	const ImWchar* koreanRanges = io.Fonts->GetGlyphRangesKorean();
+
+	CustomFont = io.Fonts->AddFontFromFileTTF(fontPath, fontSize, nullptr, koreanRanges);
+	assert(CustomFont != nullptr);
+	io.FontDefault = CustomFont;
+
+	return true;
+}
+
+void FDetailsPanel::Tick(float DeltaTime)
+{
+}
+
+
+void FDetailsPanel::OnRender()
+{
+	ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+
+	ImGui::Begin("Details");
+
+	if (TargetActor)
+	{
+		// 빌보드처럼 디테일에 숨겨진 컴포넌트가 선택되면 노출되는 부모로 올린다.
+		while (TargetComponent && TargetComponent->IsHiddenInDetails())
+		{
+			USceneComponent* HiddenComponent = Cast<USceneComponent>(TargetComponent);
+			TargetComponent = HiddenComponent ? HiddenComponent->GetAttachParent() : nullptr;
+		}
+
+		UActorComponent* SelectCandidateComponent = TargetComponent;
+
+		DrawActorHeader(TargetActor, TargetComponent);
+		DrawCompoenetList(TargetActor, TargetComponent);				
+		ImGui::Separator();
+
+		// 액터 -> 컴포넌트 순으로, 클래스별 프로퍼티 표시
+		// PIE 중이면 스크립트 경로 옆에 Reload 버튼이 붙는다
+		UWorld* PlayWorld = PlayWorldQuery ? PlayWorldQuery() : nullptr;
+
+		ImGui::PushID(TargetActor);
+		DrawProperties(TargetActor, CustomFont, PlayWorld);
+		ImGui::PopID();
+
+		if (TargetComponent)
+		{
+			ImGui::PushID(TargetComponent);
+			ImGui::SeparatorText("Component Properties");
+			DrawProperties(TargetComponent, CustomFont, PlayWorld);
+            if (auto* Light = Cast<ULightComponent>(TargetComponent)) DrawShadowPreview(Light);
+
+			if(SelectCandidateComponent != TargetComponent)
+			{
+				SelectComponent(TargetComponent);
+			}
+			if (UMeshComponent* MeshComponent = Cast<UMeshComponent>(TargetComponent))
+			{
+				DrawMaterialSlots(MeshComponent);
+			}
+			ImGui::PopID();
+
+			if (PendingDeleteComponent)
+			{
+				if (DeleteCallback)
+				{
+					DeleteCallback(PendingDeleteComponent);
+				}
+
+				PendingDeleteComponent = nullptr;
+			}			
+		}		
+	}	
+	ImGui::End();
+}
+
+
+void FDetailsPanel::SelectComponent(UActorComponent* Component)
+{
+	if (!Component)
+	{
+		TargetComponent = nullptr;
+		EditingNameComponent = nullptr;
+		bFocusNameEdit = false;
+
+		if (Callback)
+			Callback(nullptr);
+
+		return;
+	}
+
+	TargetComponent = Component;
+
+	if (Callback)
+		Callback(TargetComponent);
+}
+
+void FDetailsPanel::DrawCompoenetList(AActor* SelectedActor, UActorComponent*& OutSelectedComponent)
+{
+	if (!SelectedActor) { return; }
+
+	if (PendingDragComponent && PendingDroppedComponent)
+	{
+		TryReparent(PendingDroppedComponent, PendingDragComponent);
+		PendingDragComponent = nullptr;
+		PendingDroppedComponent = nullptr;
+	}
+
+	USceneComponent* Root = SelectedActor->GetRootComponent();
+
+	if (Root && ImGui::CollapsingHeader("Components", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		DrawSceneComponentNode(Root, Root, OutSelectedComponent);
+	}
+
+	ImGui::Separator();
+
+	// Draw ActorComponent
+	for (UActorComponent* ActorComp : SelectedActor->GetComponents())
+	{
+		if (!ActorComp || Cast<USceneComponent>(ActorComp))
+		{
+			continue;
+		}
+
+		ImGui::PushID(ActorComp);
+		ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
+		if (ActorComp == OutSelectedComponent)
+		{
+			Flags |= ImGuiTreeNodeFlags_Selected;
+		}
+		
+		FString Label = ActorComp->GetName();
+		const ImVec2 RowStart = ImGui::GetCursorScreenPos();
+		const float RowWidth = ImGui::GetContentRegionAvail().x;
+
+		ImGui::TreeNodeEx("ActorComponentNode", Flags, "%s", Label.c_str());
+
+		if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+		{
+			OutSelectedComponent = ActorComp;
+		}
+
+		if (ImGui::BeginPopupContextItem("Component Context"))
+		{
+			if (ImGui::MenuItem("Delete", nullptr, false, ActorComp != Root))
+				PendingDeleteComponent = ActorComp;
+			ImGui::EndPopup();
+		}
+
+		const FString ClassName = std::format("({})", ActorComp->GetClass()->Name);
+		const float TextX = RowStart.x + RowWidth - ImGui::CalcTextSize(ClassName.c_str()).x;
+		ImGui::GetWindowDrawList()->AddText(ImVec2(TextX, RowStart.y), IM_COL32(200, 200, 200, 255), ClassName.c_str());		
+
+		ImGui::PopID();
+	}
+}
+
+void FDetailsPanel::DrawSceneComponentNode(USceneComponent* Component, USceneComponent* Root, UActorComponent*& OutSelectedComponent)
+{
+	// 빌보드 같은 에디터 표시용 컴포넌트는 트리에 노출하지 않는다
+	if (!Component || Component->IsHiddenInDetails())
+		return;
+
+	// 숨겨진 자식만 있는 노드가 펼침 화살표를 갖지 않도록 노출되는 자식만 센다
+	TArray<USceneComponent*> Children;
+	for (USceneComponent* Child : Component->GetAttachChildren())
+	{
+		if (Child && !Child->IsHiddenInDetails())
+		{
+			Children.Add(Child);
+		}
+	}
+
+	const bool bIsLeaf = Children.IsEmpty();
+	bIsEditingName = (EditingNameComponent == Component);
+
+	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow;
+	if (Component == OutSelectedComponent)
+	{
+		Flags |= ImGuiTreeNodeFlags_Selected;
+	}
+	if (bIsLeaf)
+	{
+		Flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+	}
+
+	FString Label = Component->GetName();
+	if (Component == Root)
+		Label += " (Root)";
+
+	ImGui::PushID(Component);
+	const ImVec2 RowStart = ImGui::GetCursorScreenPos();
+	const float RowWidth = ImGui::GetContentRegionAvail().x;
+	const bool bOpen = ImGui::TreeNodeEx("ComponentNode", Flags, "%s", bIsEditingName ? "" : Label.c_str());
+
+	USceneComponent* DragComponent = Component;
+
+	// source: Root 제외, 현재 Component를 payload에 담음
+	if (Component != Root && ImGui::BeginDragDropSource())
+	{
+		ImGui::SetDragDropPayload(EditorDragDrop::Component, &Component, sizeof(USceneComponent*));
+		ImGui::EndDragDropSource();
+	}
+	// target: 모든 행이 가능, payload를 받아 현재 Component를 부모로 사용
+	if (ImGui::BeginDragDropTarget())
+	{
+		if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Component))
+		{
+			USceneComponent* DroppedComponent = *static_cast<USceneComponent**>(Payload->Data);
+			PendingDroppedComponent = DroppedComponent;
+			PendingDragComponent = DragComponent;
+		}
+		ImGui::EndDragDropTarget();
+	}
+
+	if (!bIsEditingName)
+	{
+		if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+			OutSelectedComponent = Component;
+
+		if (Component != Root && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+		{
+			EditingNameComponent = Component;
+			strncpy_s(ComponentNameEditBuffer, sizeof(ComponentNameEditBuffer), Component->GetName().c_str(), _TRUNCATE);
+			bFocusNameEdit = true;
+		}
+
+		if (ImGui::BeginPopupContextItem("Component Context"))
+		{
+			if (ImGui::MenuItem("Delete", nullptr, false, Component != Root))
+				PendingDeleteComponent = Component;
+			ImGui::EndPopup();
+		}
+
+		const FString ClassName = std::format("({})", Component->GetClass()->Name);
+		const float TextX = RowStart.x + RowWidth - ImGui::CalcTextSize(ClassName.c_str()).x;
+		ImGui::GetWindowDrawList()->AddText(ImVec2(TextX, RowStart.y), IM_COL32(200, 200, 200, 255), ClassName.c_str());
+	}
+	else
+	{
+		ImGui::SameLine();
+		if (bFocusNameEdit)
+		{
+			ImGui::SetKeyboardFocusHere();
+			bFocusNameEdit = false;
+		}
+
+		const bool bConfirmed = ImGui::InputText("Rename", ComponentNameEditBuffer,
+			sizeof(ComponentNameEditBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
+		const bool bCancelled = ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape);
+		const bool bFinished = bConfirmed || ImGui::IsItemDeactivatedAfterEdit();
+		if (bCancelled || bFinished)
+		{
+			if (!bCancelled && ComponentNameEditBuffer[0] != '\0')
+			{
+				FName NewName(ComponentNameEditBuffer);
+				AActor* Owner = Component->GetOwner();
+
+				UActorComponent* Existing = Owner->FindComponentByName(NewName);
+				if (!Existing)
+				{
+					Component->SetName(FName(ComponentNameEditBuffer));
+				}
+				else
+				{
+					HTR_LOG(Warning, "A component with this name already exists in this Actor.");
+				}
+			}
+			EditingNameComponent = nullptr;
+		}
+	}
+
+	if (bOpen && !bIsLeaf)
+	{
+		for (USceneComponent* Child : Children)
+		{
+			DrawSceneComponentNode(Child, Root, OutSelectedComponent);
+		}
+		ImGui::TreePop();
+	}
+
+	ImGui::PopID();
+}
+
+void FDetailsPanel::TryReparent(USceneComponent* DroppedComponent, USceneComponent* DragComponent)
+{
+	if (DroppedComponent != nullptr 
+		&& DroppedComponent->GetAttachParent() != DragComponent
+		&& DroppedComponent != DragComponent)
+	{
+		DroppedComponent->SetupAttachment(DragComponent, EAttachmentRule::KeepWorld);
+	}
+}
+
+
+FDetailsPanel::~FDetailsPanel()
+{
+	//delete transform;
+}
+void FDetailsPanel::DrawShadowPreview(ULightComponent* Light)
+{
+    if (!ImGui::CollapsingHeader("Shadow Map Preview")) return;
+    FString PreviewSource;
+    const FShadowResources* Resources = ShadowPreviewQuery ? ShadowPreviewQuery(Light, PreviewSource) : nullptr;
+    if (!PreviewSource.empty()) ImGui::TextWrapped("%s", PreviewSource.c_str());
+    const FShadowPreviewEntry* Entry = nullptr;
+    if (Resources)
+        for (const FShadowPreviewEntry& Candidate : Resources->PreviewEntries)
+            if (Candidate.LightId == Light->GetUUID()) { Entry = &Candidate; break; }
+    if (!Entry || !Resources->DepthAtlas || Entry->MapRects.IsEmpty())
+    {
+        ImGui::TextDisabled("No shadow map rendered for this light.");
+        return;
+    }
+    const int32 MapCount = static_cast<int32>(Entry->MapRects.Num());
+    int& SelectedMap = Entry->bPoint ? PreviewFace : PreviewCascade;
+    SelectedMap = std::clamp(SelectedMap, 0, MapCount - 1);
+    if (Entry->bPoint)
+        ImGui::Combo("Face", &PreviewFace, "+X\0-X\0+Y\0-Y\0+Z\0-Z\0");
+    else if (MapCount > 1)
+        ImGui::SliderInt("Cascade", &PreviewCascade, 0, MapCount - 1);
+    SelectedMap = std::clamp(SelectedMap, 0, MapCount - 1);
+    const FShadowAtlasRect& Rect = Entry->MapRects[static_cast<uint32>(SelectedMap)];
+    ImGui::Text("Map: %u x %u", Rect.Size, Rect.Size);
+    if (Cast<UPointLightComponent>(Light))
+        ImGui::Text("Auto LOD / Screen ratio: %.3f", Entry->ScreenRatio);
+    const FTexture* Source = Resources->DepthAtlas.get();
+    ID3D11Device* Device = RenderCommand::GetDevice();
+    ID3D11DeviceContext* Context = RenderCommand::GetContext();
+    if (!PreviewShader)
+    {
+        ComPtr<ID3DBlob> Code, Errors;
+        if (FAILED(D3DCompileFromFile(L"Resources/Shader/ShadowPreview.hlsl", nullptr, nullptr, "mainPS", "ps_5_0", 0, 0, Code.GetAddressOf(), Errors.GetAddressOf())) ||
+            FAILED(Device->CreatePixelShader(Code->GetBufferPointer(), Code->GetBufferSize(), nullptr, PreviewShader.GetAddressOf())))
+        {
+            ImGui::TextDisabled("Shadow preview shader could not be created.");
+            return;
+        }
+    }
+    D3D11_TEXTURE2D_DESC Desc{};
+    if (PreviewTexture) PreviewTexture->GetDesc(&Desc);
+    if (!PreviewTexture || Desc.Width != Source->GetWidth() || Desc.Height != Source->GetHeight())
+    {
+        PreviewSRV.Reset();
+        PreviewTexture.Reset();
+        Desc = {};
+        Desc.Width = Source->GetWidth();
+        Desc.Height = Source->GetHeight();
+        Desc.MipLevels = Desc.ArraySize = Desc.SampleDesc.Count = 1;
+        Desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        Desc.Usage = D3D11_USAGE_DEFAULT;
+        Desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SHADER_RESOURCE_VIEW_DESC View{};
+        View.Format = DXGI_FORMAT_R32_FLOAT;
+        View.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        View.Texture2D.MipLevels = 1;
+        if (FAILED(Device->CreateTexture2D(&Desc, nullptr, PreviewTexture.GetAddressOf())) ||
+            FAILED(Device->CreateShaderResourceView(PreviewTexture.Get(), &View, PreviewSRV.GetAddressOf())))
+        {
+            PreviewTexture.Reset();
+            ImGui::TextDisabled("Shadow preview texture could not be created.");
+            return;
+        }
+    }
+    // 깊이 자원 전체를 복사하고 표시 UV로 선택한 Light의 Map만 보여준다.
+    ID3D11ShaderResourceView* NullSRV = nullptr;
+    Context->PSSetShaderResources(0, 1, &NullSRV);
+    Context->CopyResource(PreviewTexture.Get(), Source->GetRawPtr());
+    const float InvWidth = 1.0f / static_cast<float>(Source->GetWidth());
+    const float InvHeight = 1.0f / static_cast<float>(Source->GetHeight());
+    const ImVec2 UV0((Rect.X + 0.5f) * InvWidth, (Rect.Y + 0.5f) * InvHeight);
+    const ImVec2 UV1((Rect.X + Rect.Size - 0.5f) * InvWidth, (Rect.Y + Rect.Size - 0.5f) * InvHeight);
+    ImGui::TextDisabled("Depth: black = 0, white = 1 (clear)");
+    const float Size = std::max(1.0f, std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    ImGui::GetWindowDrawList()->AddCallback([](const ImDrawList*, const ImDrawCmd* Command)
+    {
+        auto* Panel = static_cast<FDetailsPanel*>(Command->UserCallbackData);
+        RenderCommand::GetContext()->PSSetShader(Panel->PreviewShader.Get(), nullptr, 0);
+    }, this);
+    ImGui::Image((ImTextureID)PreviewSRV.Get(), ImVec2(Size, Size), UV0, UV1);
+    ImGui::GetWindowDrawList()->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+
+    if (ImGui::TreeNode("Atlas Preview"))
+    {
+        ImGui::Text("Atlas: %u x %u", Source->GetWidth(), Source->GetHeight());
+        ImGui::TextDisabled("Cyan: maps of this light / Yellow: selected map");
+
+        const float AtlasWidth = static_cast<float>(Source->GetWidth());
+        const float AtlasHeight = static_cast<float>(Source->GetHeight());
+        const float DisplayWidth = std::max(1.0f, std::min(512.0f, ImGui::GetContentRegionAvail().x));
+        const ImVec2 DisplaySize(DisplayWidth, DisplayWidth * AtlasHeight / AtlasWidth);
+        ImDrawList* DrawList = ImGui::GetWindowDrawList();
+
+        // 개별 Map과 같은 복사본과 Shader로 Atlas 전체 깊이를 표시한다.
+        DrawList->AddCallback([](const ImDrawList*, const ImDrawCmd* Command)
+        {
+            auto* Panel = static_cast<FDetailsPanel*>(Command->UserCallbackData);
+            RenderCommand::GetContext()->PSSetShader(Panel->PreviewShader.Get(), nullptr, 0);
+        }, this);
+        ImGui::Image((ImTextureID)PreviewSRV.Get(), DisplaySize, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+        const ImVec2 ImageMin = ImGui::GetItemRectMin();
+        const ImVec2 ImageMax = ImGui::GetItemRectMax();
+        DrawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+
+        const float ScaleX = DisplaySize.x / AtlasWidth;
+        const float ScaleY = DisplaySize.y / AtlasHeight;
+        auto DrawMapOutline = [&](int32 MapIndex, ImU32 Color, float Thickness)
+        {
+            const FShadowAtlasRect& MapRect = Entry->MapRects[static_cast<uint32>(MapIndex)];
+            const ImVec2 TileMin(ImageMin.x + MapRect.X * ScaleX, ImageMin.y + MapRect.Y * ScaleY);
+            const ImVec2 TileMax(ImageMin.x + (MapRect.X + MapRect.Size) * ScaleX,
+                ImageMin.y + (MapRect.Y + MapRect.Size) * ScaleY);
+            DrawList->AddRect(TileMin, TileMax, Color, 0.0f, Thickness, 0);
+        };
+
+        DrawList->PushClipRect(ImageMin, ImageMax, true);
+        for (int32 MapIndex = 0; MapIndex < MapCount; ++MapIndex)
+        {
+            if (MapIndex != SelectedMap)
+                DrawMapOutline(MapIndex, IM_COL32(0, 220, 255, 255), 1.0f);
+        }
+        // 선택 영역의 테두리를 마지막에 그려 인접 영역에 가려지지 않게 한다.
+        DrawMapOutline(SelectedMap, IM_COL32(255, 220, 0, 255), 2.0f);
+        DrawList->PopClipRect();
+        ImGui::TreePop();
+    }
+}

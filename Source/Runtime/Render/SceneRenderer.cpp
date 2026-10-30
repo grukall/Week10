@@ -1,0 +1,1349 @@
+#include "EnginePCH.h"
+#include "Render/SceneRenderer.h"
+#include "Component/PrimitiveComponent.h"
+#include "Component/StaticMeshComponent.h"
+#include "Component/BillboardComponent.h"
+#include "Component/ParticleSubUVComponent.h"
+#include "Engine/PrimitiveSceneProxy.h"
+#include "Engine/World.h"
+#include "Engine/LightSceneProxy.h"
+#include "Camera/CameraProjection.h"
+#include "Core/Stats/LightweightStats.h"
+#include <algorithm>
+#include <cassert>
+#include <cfloat>
+#include <cstring>
+
+namespace
+{
+DECLARE_CYCLE_STAT("Capture World", STAT_CaptureWorld);
+DECLARE_CYCLE_STAT("Build Render Queue", STAT_BuildRenderQueue);
+
+void SortParticlesByCameraDistance(const TArray<FParticleSortInput>& Particles, const FVector& CameraLocation, TArray<uint32>& OutSortedBackToFront)
+{
+    // 파티클 ID와 미리 계산한 카메라 거리 제곱을 함께 담는다.
+    struct FEntry { uint32 Id; float DistanceSquared; };
+    TArray<FEntry> Entries;
+    for (const FParticleSortInput& Particle : Particles)
+    {
+        const FVector Delta = Particle.WorldPosition - CameraLocation;
+        Entries.Add({Particle.Id, Delta.X * Delta.X + Delta.Y * Delta.Y + Delta.Z * Delta.Z});
+    }
+    std::stable_sort(Entries.begin(), Entries.end(), [](const FEntry& A, const FEntry& B)
+    {
+        return A.DistanceSquared > B.DistanceSquared;
+    });
+    OutSortedBackToFront.Reset();
+    for (const FEntry& Entry : Entries)
+    {
+        OutSortedBackToFront.Add(Entry.Id);
+    }
+}
+
+bool IsBlack(const FVector& Color)
+{
+    return Color.X <= 0.0f && Color.Y <= 0.0f && Color.Z <= 0.0f;
+}
+
+bool IsSphereOutsideFrustum(const FVector& Center, float Radius, const FFrustumPlanes& Frustum)
+{
+    for (const FPlane& Plane : Frustum.Planes)
+        if (Plane.Normal.Dot(Center) + Plane.Distance < -Radius) return true;
+    return false;
+}
+
+// 점들이 평면 하나의 바깥에 모두 있으면 그 점들의 볼록 껍질도 그 평면 바깥이다.
+bool ArePointsOutsideFrustum(const FVector* Points, uint32 Count, const FFrustumPlanes& Frustum)
+{
+    for (const FPlane& Plane : Frustum.Planes)
+    {
+        bool bAllOutside = true;
+        for (uint32 Index = 0; Index < Count && bAllOutside; ++Index)
+            bAllOutside = Plane.Normal.Dot(Points[Index]) + Plane.Distance < 0.0f;
+        if (bAllOutside) return true;
+    }
+    return false;
+}
+
+// 값이 클수록 더 많은 단계를 통과했다. 컬링 이유는 가장 멀리 간 단계로 기록한다.
+enum class ELightViewResult : uint8 { OutsideView, TooFar, TooSmall, Visible };
+
+// 어느 View 하나라도 프러스텀 안 + 거리 안 + 크기 이상이면 Visible이다.
+ELightViewResult TestLightAgainstViews(const FVector& Center, float Radius, const TArray<FShadowCullingView>& Views, const FShadowCullingSettings& Settings)
+{
+    if (Views.IsEmpty()) return ELightViewResult::Visible;
+    ELightViewResult Result = ELightViewResult::OutsideView;
+    for (const FShadowCullingView& View : Views)
+    {
+        if (Settings.bCullLightsByView && IsSphereOutsideFrustum(Center, Radius, View.Frustum)) continue;
+        const float Distance = (Center - View.Location).Size();
+        if (Settings.ShadowDistance > 0.0f && Distance - Radius > Settings.ShadowDistance)
+        {
+            Result = std::max(Result, ELightViewResult::TooFar);
+            continue;
+        }
+        if (Settings.MinLightScreenRadius > 0.0f)
+        {
+            // 원근 카메라가 영향 범위 안에 있으면 화면 전체를 덮는다.
+            const bool bCameraInside = !View.bOrthographic && Distance <= Radius;
+            const float ScreenRadius = View.bOrthographic ? Radius * View.PixelsPerUnit : Radius * View.PixelsPerUnit / std::max(Distance, 1.0e-4f);
+            if (!bCameraInside && ScreenRadius < Settings.MinLightScreenRadius)
+            {
+                Result = std::max(Result, ELightViewResult::TooSmall);
+                continue;
+            }
+        }
+        return ELightViewResult::Visible;
+    }
+    return Result;
+}
+
+// 라이트 반경 / (카메라 거리 * tan(FovY/2)). 공유 Atlas이므로 View 중 최댓값을 쓴다.
+float ComputeLocalShadowScreenRatio(const FLightSceneProxy& Light, const TArray<FShadowCullingView>& Views)
+{
+    FVector Center;
+    float Radius;
+    if (Light.GetLightType() == ELightType::Spot)
+    {
+        const auto& Spot = static_cast<const FSpotLightSceneProxy&>(Light);
+        Center = Spot.GetInfo().Position;
+        Radius = Spot.GetInfo().AttenuationRadius;
+    }
+    else
+    {
+        const auto& Point = static_cast<const FPointLightSceneProxy&>(Light);
+        Center = Point.GetInfo().Position;
+        Radius = Point.GetInfo().AttenuationRadius;
+    }
+
+    float Ratio = 0.0f;
+    bool bHasValidView = false;
+    for (const FShadowCullingView& View : Views)
+    {
+        if (View.InvViewHeight <= 0.0f) continue;
+        bHasValidView = true;
+        const float Distance = (Center - View.Location).Size();
+        if (!View.bOrthographic && Distance <= Radius) return 1.0f;
+        const float DiameterRatio = 2.0f * Radius * View.PixelsPerUnit * View.InvViewHeight;
+        Ratio = std::max(Ratio, View.bOrthographic ? DiameterRatio : DiameterRatio / std::max(Distance, 1.0e-4f));
+    }
+    return bHasValidView ? std::clamp(Ratio, 0.0f, 1.0f) : 1.0f;
+}
+
+uint32 CalcShadowTileResolution(float ProjRatio, uint32 MaxResolution)
+{
+    // 에디터에서 선택한 최대 크기를 기준으로 절반씩 줄이며 최소 256을 유지한다.
+    MaxResolution = std::clamp(MaxResolution, 256u, 1024u);
+    if (ProjRatio > 0.4f) return MaxResolution;
+    if (ProjRatio > 0.2f) return std::max(MaxResolution / 2, 256u);
+    if (ProjRatio > 0.03f) return std::max(MaxResolution / 4, 256u);
+    return 0; // 최소 타일은 256. 이보다 작은 화면 비율은 그림자를 생성하지 않는다.
+}
+
+// 큐브맵 한 면이 맡는 구 영역(|y|,|z| <= x <= R)은 라이트 위치와, 거리 R 평면 위 반폭 R 사각형으로 만든 피라미드 안에 들어간다.
+bool IsPointFaceVisible(const FVector& LightPosition, float Radius, const FVector& Forward, const FVector& Right, const FVector& Up, const TArray<FShadowCullingView>& Views)
+{
+    if (Views.IsEmpty()) return true;
+    const FVector Base = LightPosition + Forward * Radius;
+    const FVector Points[5] = {
+        LightPosition,
+        Base + (Right + Up) * Radius, Base + (Right - Up) * Radius,
+        Base - (Right - Up) * Radius, Base - (Right + Up) * Radius};
+    for (const FShadowCullingView& View : Views)
+        if (!ArePointsOutsideFrustum(Points, 5, View.Frustum)) return true;
+    return false;
+}
+
+// Caster 박스와 빛 방향으로 늘린 그림자 볼륨을 함께 감싸는 점 16개로 판정한다.
+// 어느 View 프러스텀과도 겹치지 않으면 그 Caster의 그림자는 화면 어디에도 닿지 않는다.
+bool IsCasterShadowVisible(const FAABB& Bounds, const FShadowCasterCullContext& Context, const TArray<FShadowCullingView>& Views)
+{
+    if (Views.IsEmpty()) return true;
+    FVector Points[16];
+    for (uint32 Corner = 0; Corner < 8; ++Corner)
+    {
+        Points[Corner] = Bounds.Center + FVector(
+            (Corner & 1) ? Bounds.Extent.X : -Bounds.Extent.X,
+            (Corner & 2) ? Bounds.Extent.Y : -Bounds.Extent.Y,
+            (Corner & 4) ? Bounds.Extent.Z : -Bounds.Extent.Z);
+    }
+    if (Context.LightType == ELightType::Directional)
+    {
+        // 그림자는 Receiver가 있는 장면 범위 안에만 생기므로, 볼륨이 장면 바운드를 빠져나가는 곳까지만 늘린다.
+        // 축마다 "출구 평면에서 가장 먼 꼭짓점이 그 평면에 닿는 거리"를 구하고 그중 최소를 쓴다.
+        // 박스 안의 어느 점도 이 거리 안에 장면을 벗어나므로 보수적이다(화면에 닿는 그림자를 지우지 않는다).
+        const float Direction[3] = {Context.LightDirection.X, Context.LightDirection.Y, Context.LightDirection.Z};
+        const float BoxMin[3] = {Bounds.Center.X - Bounds.Extent.X, Bounds.Center.Y - Bounds.Extent.Y, Bounds.Center.Z - Bounds.Extent.Z};
+        const float BoxMax[3] = {Bounds.Center.X + Bounds.Extent.X, Bounds.Center.Y + Bounds.Extent.Y, Bounds.Center.Z + Bounds.Extent.Z};
+        const float SceneMin[3] = {Context.SceneMin.X, Context.SceneMin.Y, Context.SceneMin.Z};
+        const float SceneMax[3] = {Context.SceneMax.X, Context.SceneMax.Y, Context.SceneMax.Z};
+        float Extrude = Context.ExtrudeDistance;
+        for (uint32 Axis = 0; Axis < 3; ++Axis)
+        {
+            if (std::abs(Direction[Axis]) < 1.0e-4f) continue;
+            const float ExitPlane = Direction[Axis] > 0.0f ? SceneMax[Axis] : SceneMin[Axis];
+            const float FarthestCorner = Direction[Axis] > 0.0f ? BoxMin[Axis] : BoxMax[Axis];
+            Extrude = std::min(Extrude, std::max((ExitPlane - FarthestCorner) / Direction[Axis], 0.0f));
+        }
+        const FVector Offset = Context.LightDirection * Extrude;
+        for (uint32 Corner = 0; Corner < 8; ++Corner)
+            Points[8 + Corner] = Points[Corner] + Offset;
+    }
+    else
+    {
+        // 그림자 볼륨의 끝은 반경 R 구면이다. 라이트에서 박스를 보는 반각을 beta라 하면,
+        // 그 구면 조각은 각 꼭짓점 방향으로 R / cos(beta)까지 늘린 점들의 껍질 안에 들어간다.
+        const float CenterDistance = (Bounds.Center - Context.LightPosition).Size();
+        const float BoundsRadius = Bounds.Extent.Size();
+        const float SinBeta = CenterDistance > 0.0f ? BoundsRadius / CenterDistance : 1.0f;
+        // 라이트가 박스 안이거나 너무 가까우면 볼륨이 사방으로 퍼지므로 컬링하지 않는다.
+        if (SinBeta > 0.99f) return true;
+        const float FarDistance = Context.ExtrudeDistance / std::sqrt(1.0f - SinBeta * SinBeta);
+        for (uint32 Corner = 0; Corner < 8; ++Corner)
+            Points[8 + Corner] = Context.LightPosition + (Points[Corner] - Context.LightPosition).GetSafeNormal() * FarDistance;
+    }
+    for (const FShadowCullingView& View : Views)
+        if (!ArePointsOutsideFrustum(Points, 16, View.Frustum)) return true;
+    return false;
+}
+
+// 점에서 박스까지 가장 가까운 거리의 제곱. 점이 박스 안이면 0이다.
+float DistanceSquaredToBox(const FVector& Point, const FAABB& Bounds)
+{
+    const float DX = std::max(std::abs(Point.X - Bounds.Center.X) - Bounds.Extent.X, 0.0f);
+    const float DY = std::max(std::abs(Point.Y - Bounds.Center.Y) - Bounds.Extent.Y, 0.0f);
+    const float DZ = std::max(std::abs(Point.Z - Bounds.Center.Z) - Bounds.Extent.Z, 0.0f);
+    return DX * DX + DY * DY + DZ * DZ;
+}
+
+// 실제 메시만 Receiver로 센다. 에디터의 광원 Billboard는 bReceiveShadow가 켜져 있어도 그림자를 조회하지 않는다.
+bool IsShadowReceivingMesh(const FPrimitiveSceneProxy* Proxy)
+{
+    return Proxy && Proxy->IsVisible() && Proxy->ReceivesShadow() && Proxy->GetMesh();
+}
+
+// 그림자를 실제로 조회할 수 있는 Receiver가 어느 활성 View에라도 있는지 보수적으로 판정한다.
+// Light/Receiver 모두 바운드로 검사하므로 불필요한 맵을 남길 수는 있어도 필요한 맵을 지우지는 않는다.
+bool HasVisibleShadowReceiver(const FScene& Scene, const FVector& LightCenter, float LightRadius,
+    const TArray<FShadowCullingView>& Views)
+{
+    if (Views.IsEmpty()) return true;
+
+    bool bFound = false;
+    const float RadiusSquared = LightRadius * LightRadius;
+    Scene.BVH.Query(
+        [&](const FBox& Box)
+        {
+            return !bFound && DistanceSquaredToBox(LightCenter, MakeWorldBounds(Box)) <= RadiusSquared;
+        },
+        [&](FPrimitiveSceneProxy* Proxy)
+        {
+            if (bFound || !IsShadowReceivingMesh(Proxy)) return;
+            const FAABB& Bounds = Proxy->GetBounds();
+            if (DistanceSquaredToBox(LightCenter, Bounds) > RadiusSquared) return;
+            for (const FShadowCullingView& View : Views)
+            {
+                if (!IsAABBInFrustum(Bounds, View.Frustum)) continue;
+                bFound = true;
+                break;
+            }
+        });
+    return bFound;
+}
+
+// Directional은 뷰별로 그리므로 해당 뷰에 그림자를 조회할 Receiver가 없으면 맵 전체가 필요 없다.
+bool HasVisibleShadowReceiver(const FScene& Scene, const TArray<FShadowCullingView>& Views)
+{
+    if (Views.IsEmpty()) return true;
+
+    bool bFound = false;
+    Scene.BVH.Query(
+        [&](const FBox& Box)
+        {
+            if (bFound) return false;
+            const FAABB Bounds = MakeWorldBounds(Box);
+            for (const FShadowCullingView& View : Views)
+                if (IsAABBInFrustum(Bounds, View.Frustum)) return true;
+            return false;
+        },
+        [&](FPrimitiveSceneProxy* Proxy)
+        {
+            if (!IsShadowReceivingMesh(Proxy)) return;
+            for (const FShadowCullingView& View : Views)
+            {
+                if (!IsAABBInFrustum(Proxy->GetBounds(), View.Frustum)) continue;
+                bFound = true;
+                break;
+            }
+        });
+    return bFound;
+}
+
+// Caster 바운딩 구의 쉐도우 맵 상 지름(텍셀).
+float ComputeCasterTexels(const FAABB& Bounds, const FShadowCasterCullContext& Context)
+{
+    const float BoundsRadius = Bounds.Extent.Size();
+    if (Context.LightType == ELightType::Directional)
+        return 2.0f * BoundsRadius * Context.TexelsPerUnit;
+    // Perspective는 거리에 반비례한다. 라이트가 박스 안이면 맵 전체를 덮는다.
+    const float Distance = (Bounds.Center - Context.LightPosition).Size();
+    if (Distance <= BoundsRadius) return FLT_MAX;
+    return 2.0f * BoundsRadius * Context.TexelsPerUnit / Distance;
+}
+}
+
+void FSceneRenderer::BeginFrame()
+{
+    assert(!bFrameActive);
+    bFrameActive = true;
+    ++FrameNumber;
+    CapturedWorld = nullptr;
+    RegisteredShadowViews.Reset();
+}
+
+void FSceneRenderer::AddShadowView(const UWorld& World, const FSceneView& View)
+{
+    FShadowCullingView CullingView;
+    CullingView.Frustum = View.Frustum;
+    CullingView.Location = View.GetCameraLocation();
+    CullingView.bOrthographic = View.IsOrthographic();
+    const float Height = View.ViewRect.Height;
+    CullingView.InvViewHeight = Height > 0.0f ? 1.0f / Height : 0.0f;
+    if (CullingView.bOrthographic)
+    {
+        // 직교: 화면 높이 픽셀 / 직교 높이(월드).
+        const float Aspect = Height > 0.0f ? View.ViewRect.Width / Height : 1.0f;
+        const float OrthoHeight = View.ProjectionSettings.OrthoWidth / Aspect;
+        CullingView.PixelsPerUnit = OrthoHeight > 0.0f ? Height / OrthoHeight : 0.0f;
+    }
+    else
+    {
+        // 원근: 거리 1에서 반높이 tan(FOV/2)가 화면 반높이 픽셀에 대응한다.
+        CullingView.PixelsPerUnit = 0.5f * Height / std::tan(FMath::DegreesToRadians(View.ProjectionSettings.FovDegrees) * 0.5f);
+    }
+    RegisteredShadowViews.Add({&World, CullingView});
+}
+
+const FShadowCullingStats* FSceneRenderer::GetShadowCullingStats(uint32 ResourceIndex) const
+{
+    if (ResourceIndex >= MaxShadowResourceSlots || WorldShadowFrames[ResourceIndex].PreparedFrame == 0) return nullptr;
+    return &WorldShadowFrames[ResourceIndex].Data.CullingStats;
+}
+
+void FSceneRenderer::PrepareView(UWorld& World, const FSceneView& View, FSceneRenderData& Data)
+{
+    assert(bFrameActive);
+    Data.ResetFrame();
+    if (CapturedWorld != &World)
+    {
+        SCOPE_CYCLE_COUNTER(STAT_CaptureWorld);
+        CaptureWorld(World);
+        CapturedWorld = &World;
+    }
+    SCOPE_CYCLE_COUNTER(STAT_BuildRenderQueue);
+    BuildRenderQueue(View, Data);
+}
+
+void FSceneRenderer::EndFrame()
+{
+    for (auto& Slot : WorldShadowFrames) Slot.Data.ResetFrame();
+    for (auto& Entry : PrimitiveById)
+    {
+        Entry.second.Primitive = nullptr;
+        Entry.second.bCaptured = false;
+        Entry.second.bParticlesPrepared = false;
+        Entry.second.AliveParticleIndices.Reset();
+    }
+    RenderObjects.Reset();
+    CapturedWorld = nullptr;
+    bFrameActive = false;
+}
+
+void FSceneRenderer::CaptureWorld(UWorld& World)
+{
+    RenderObjects.Reset();
+    for (auto& Entry : PrimitiveById) Entry.second.bCaptured = false;
+
+    const FScene& Scene = World.GetScene();
+    const int32 Count = Scene.Proxies.Num();
+    for (int32 i = 0; i < Count;++i)
+    {
+        if (!Scene.PrimitiveFlags[i]) continue;
+        UPrimitiveComponent* Primitive = Scene.Proxies[i]->GetComponent();
+        if (!Primitive || !Primitive->IsVisible() || !Primitive->GetOwner() ||
+            Primitive->GetOwner()->GetWorld() != &World) continue;
+        if (World.IsGameWorld() && Primitive->IsHiddenInGame()) continue;
+        const uint32 Id = Primitive->GetUUID();
+        if (Id == 0) continue;
+
+        FRenderableObject RenderObject{};
+        RenderObject.Id = Id;
+        const FPrimitiveSceneProxy* Proxy = Primitive->GetSceneProxy();
+        RenderObject.WorldBounds = Proxy && Proxy->GetMesh()
+            ? Proxy->GetBounds() : MakeWorldBounds(Primitive->CalcBounds());
+        RenderObjects.Add(RenderObject);
+        FPrimitiveSnapshot& Snapshot = PrimitiveById[Id];
+        Snapshot.Primitive = Primitive;
+        Snapshot.bCaptured = true;
+        Snapshot.bParticlesPrepared = false;
+    }
+
+    for (auto Iterator = PrimitiveById.begin(); Iterator != PrimitiveById.end();)
+    {
+        const auto Current = Iterator++;
+        if (!Current->second.bCaptured) PrimitiveById.Remove(Current->first);
+    }
+}
+
+void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& Data)
+{
+    FRenderQueue& OutQueue = Data.RenderQueue;
+    auto& PendingStaticMeshes = Data.PendingStaticMeshes;
+    auto& LODInputs = Data.LODInputs;
+    auto& SelectedLODs = Data.SelectedLODs;
+    auto& SortInputs = Data.SortInputs;
+    auto& SortedParticleIds = Data.SortedParticleIds;
+    // 기존 순서와 AABB/절두체 검사를 그대로 사용한다.
+    for (const FRenderableObject& Object : RenderObjects)
+        if (IsAABBInFrustum(Object.WorldBounds, View.Frustum))
+            Data.VisibleIds.Add(Object.Id);
+    const FLODViewContext LODContext = View.MakeLODContext();
+    for (const uint32 Id : Data.VisibleIds)
+    {
+        const auto Found = PrimitiveById.Find(Id);
+        if (!Found || !Found->Primitive)
+            continue;
+
+        UPrimitiveComponent* Primitive = Found->Primitive;
+        if (UParticleSubUVComponent* ParticleComponent = Cast<UParticleSubUVComponent>(Primitive))
+        {
+            const TArray<FParticle>& Particles = ParticleComponent->GetParticlesForView();
+            FPrimitiveSnapshot& Snapshot = *Found;
+            if (!Snapshot.bParticlesPrepared)
+            {
+                Snapshot.AliveParticleIndices.Reset();
+                Snapshot.AliveParticleIndices.Reserve(Particles.Num());
+                for (int32 Index = 0; Index < Particles.Num(); ++Index)
+                    if (Particles[Index].bAlive) Snapshot.AliveParticleIndices.Add(Index);
+                ParticleComponent->BeginViewSubmission();
+                Snapshot.bParticlesPrepared = true;
+            }
+            // 반투명은 모든 emitter를 합친 최종 Renderer만 정렬한다. 불투명은 기존 거리 정렬을 유지하며 동률은 인덱스 순서다.
+            const FVector CameraLocation = View.GetCameraLocation();
+            const bool bOpaque = ParticleComponent->UsesOpaqueMaterial();
+            if (bOpaque)
+            {
+                SortInputs.Reset();
+                for (const int32 Index : Snapshot.AliveParticleIndices)
+                    SortInputs.Add({static_cast<uint32>(Index + 1), Particles[Index].Location});
+                SortParticlesByCameraDistance(SortInputs, View.GetCameraLocation(), SortedParticleIds);
+            }
+            for (int32 Order = 0; Order < Snapshot.AliveParticleIndices.Num(); ++Order)
+            {
+                const int32 ParticleIndex = bOpaque ? static_cast<int32>(SortedParticleIds[Order] - 1) : Snapshot.AliveParticleIndices[Order];
+                const FParticle& Particle = Particles[ParticleIndex];
+                const FMatrix ParticleWorld = View.BuildBillboardMatrix(Particle.Location, Particle.Scale, Particle.Scale);
+                const FVector Delta = Particle.Location - CameraLocation;
+                ParticleComponent->SubmitParticleToRenderQueue(OutQueue, ParticleIndex, ParticleWorld, Delta.Dot(Delta));
+            }
+        }
+        else if (UBillboardComponent* Billboard = Cast<UBillboardComponent>(Primitive))
+        {
+            const FVector Scale = Billboard->GetWorldScale3D();
+            Billboard->SubmitToRenderQueue(OutQueue, View.BuildBillboardMatrix(Billboard->GetWorldLocation(), Scale.Y, Scale.Z));
+        }
+        else if (auto* StaticComponent = Cast<UStaticMeshComponent>(Primitive))
+        {
+            UStaticMesh* Mesh = StaticComponent->GetStaticMesh();
+            if (!Mesh)
+                continue;
+
+            const FPrimitiveSceneProxy* Proxy = StaticComponent->GetSceneProxy();
+            if (Proxy)
+            {
+                PendingStaticMeshes.Add(StaticComponent);
+                LODInputs.Add({Proxy->GetLODSphere(), Proxy->GetRenderState()});
+            }
+        }
+        else
+        {
+            Primitive->SubmitToRenderQueue(OutQueue);
+        }
+    }
+    SelectLODs(LODInputs, LODContext, SelectedLODs);
+    for (uint32 I = 0; I < static_cast<uint32>(PendingStaticMeshes.Num()); ++I)
+        PendingStaticMeshes[I]->SubmitToRenderQueue(OutQueue, SelectedLODs[I]);
+}
+
+void FSceneRenderer::BuildShadowRequests(const FScene& Scene, FShadowFrameData& OutData, std::initializer_list<ELightType> LightTypes)
+{
+    // 이전 CPU 요청/Queue만 비운다. GPU 배열을 해제하거나 재생성하는 처리가 아니다.
+    OutData.ResetFrame();
+    OutData.CullingStats = {};
+    FShadowCullingStats& Stats = OutData.CullingStats;
+    // 호출자가 지정한 Light 종류만 준비한다.
+    // 출력 위치는 Caster 컬링까지 끝난 뒤 Light별 준비 함수가 배정한다.
+    for (ELightType Type : LightTypes)
+    {
+        if (Type == ELightType::Directional)
+        {
+            const FLightSceneProxy* Directional = nullptr;
+            for (const FLightSceneProxy* Light : Scene.Lights)
+                if (Light->IsVisible() && Light->GetLightType() == Type)
+                    Directional = Light;
+            // 조명과 동일하게 마지막 visible Directional만 사용한다.
+            if (Directional && Directional->CastsShadow())
+            {
+                ++Stats.LightsConsidered;
+                OutData.ConsideredLightIds.Add(Directional->GetComponent()->GetUUID());
+                if (IsBlack(static_cast<const FDirectionalLightSceneProxy*>(Directional)->GetInfo().Color))
+                    ++Stats.LightsCulledByIntensity;
+                else
+                    OutData.ShadowRequestsPerLight.Add({Directional});
+            }
+            continue;
+        }
+        for (const FLightSceneProxy* Light : Scene.Lights)
+        {
+            if (!Light->IsVisible() || Light->GetLightType() != Type) continue;
+            if (!Light->CastsShadow()) continue;
+            FVector Color;
+            FVector CullingCenter;
+            float CullingRadius = 0.0f;
+            if (Type == ELightType::Point)
+            {
+                const FPointLightInfo& Info = static_cast<const FPointLightSceneProxy*>(Light)->GetInfo();
+                if (Info.AttenuationRadius <= 0.0f) continue;
+                Color = Info.Color;
+                CullingCenter = Info.Position;
+                CullingRadius = Info.AttenuationRadius;
+            }
+            else
+            {
+                const auto* Spot = static_cast<const FSpotLightSceneProxy*>(Light);
+                if (Spot->GetInfo().AttenuationRadius <= 0.0f) continue;
+                // 타일 라이트 컬링과 같은, 콘을 감싸는 구를 쓴다.
+                Color = Spot->GetInfo().Color;
+                CullingCenter = Spot->GetCullingSphereCenter();
+                CullingRadius = Spot->GetCullingSphereRadius();
+            }
+
+            ++Stats.LightsConsidered;
+            OutData.ConsideredLightIds.Add(Light->GetComponent()->GetUUID());
+            if (IsBlack(Color))
+            {
+                ++Stats.LightsCulledByIntensity;
+                continue;
+            }
+            const ELightViewResult ViewResult = TestLightAgainstViews(CullingCenter, CullingRadius, PreparingShadowViews, ShadowCullingSettings);
+            if (ViewResult == ELightViewResult::OutsideView) { ++Stats.LightsCulledByView; continue; }
+            if (ViewResult == ELightViewResult::TooFar) { ++Stats.LightsCulledByDistance; continue; }
+            if (ViewResult == ELightViewResult::TooSmall) { ++Stats.LightsCulledByScreenSize; continue; }
+            if (!HasVisibleShadowReceiver(Scene, CullingCenter, CullingRadius, PreparingShadowViews))
+            {
+                ++Stats.LightsCulledByNoReceiver;
+                continue;
+            }
+            OutData.ShadowRequestsPerLight.Add({Light});
+        }
+    }
+}
+
+void FSceneRenderer::BuildShadowCasterQueue(UWorld& World, FShadowDepthPassInfo& Pass, const FShadowCasterCullContext& Context, FShadowCullingStats& Stats)
+{
+    FRenderQueue& Queue = Pass.CasterPackets;
+    Queue.Reset();
+    const FFrustumPlanes& Frustum = Pass.Frustum;
+    // 라이트 프러스텀 밖은 BVH가 걸러낸다.
+    World.GetScene().BVH.QueryCull(FrustumAllPlanesMask,
+                                    [&Frustum](const FBox& Bounds, uint32& Mask)
+                                    {
+                                        return static_cast<EBVHCullResult>(ClassifyBoxInFrustum(Bounds, Frustum, Mask));
+                                    },
+                                    [&](FPrimitiveSceneProxy* Proxy)
+                                    {
+                                        if (!Proxy->IsVisible() || !Proxy->CastsShadow()) return;
+                                        UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(Proxy->GetComponent());
+                                        if (!Component || !Component->GetOwner() || Component->GetOwner()->GetWorld() != &World) return;
+                                        if (World.IsGameWorld() && Component->IsHiddenInGame()) return;
+                                        const FAABB& Bounds = Proxy->GetBounds();
+                                        // 프러스텀 판정은 평면마다 따로 하므로, 바닥처럼 넓은 박스는 실제로 겹치지 않아도 통과할 수 있다.
+                                        // Point/Spot은 영향 구와 박스 거리로 한 번 더 걸러 라이트 프러스텀 컬링의 일부로 처리한다.
+                                        if (Context.LightType != ELightType::Directional &&
+                                            DistanceSquaredToBox(Context.LightPosition, Bounds) > Context.ExtrudeDistance * Context.ExtrudeDistance)
+                                            return;
+                                        ++Stats.CastersConsidered;
+                                        if (ShadowCullingSettings.MinCasterTexels > 0.0f && ComputeCasterTexels(Bounds, Context) < ShadowCullingSettings.MinCasterTexels)
+                                        {
+                                            ++Stats.CastersCulledBySize;
+                                            return;
+                                        }
+                                        if (!Stats.bCaching && ShadowCullingSettings.bCullCastersByView && !IsCasterShadowVisible(Bounds, Context, PreparingShadowViews))
+                                        {
+                                            ++Stats.CastersCulledByView;
+                                            return;
+                                        }
+                                        const int32 FirstPacket = Queue.Num();
+                                        Component->SubmitToRenderQueue(Queue, 0);
+                                        // 이 객체가 추가한 Section만 depth draw 기준으로 걸러낸다.
+                                        int32 Kept = FirstPacket;
+                                        for (int32 Index = FirstPacket; Index < Queue.Num(); ++Index)
+                                        {
+                                            const FRenderPacket& Packet = Queue[Index];
+                                            if (!Packet.Mesh || !Packet.Material || Packet.Material->ParamLayout != EMaterialParamLayout::StaticMesh || Packet.Material->BlendState != EBlendState::Opaque) continue;
+                                            if (Kept != Index) Queue[Kept] = Packet;
+                                            ++Kept;
+                                        }
+                                        Queue.SetNum(Kept);
+                                        // Section 수와 무관하게 depth 패킷이 남은 객체를 한 번 센다.
+                                        if (Kept > FirstPacket) ++Stats.CastersDrawn;
+                                    }
+                                    );
+
+}
+
+namespace
+{
+// 엔진의 View 축은 +X 전방, +Y 오른쪽, +Z 위쪽이다.
+FMatrix MakeLightView(const FVector& Eye, const FVector& Forward, const FVector& Right, const FVector& Up)
+{
+    FMatrix Rotation = FMatrix::Identity;
+    Rotation.SetAxis(0, Forward);
+    Rotation.SetAxis(1, Right);
+    Rotation.SetAxis(2, Up);
+    return FMatrix::MakeTranslation(Eye * -1.0f) * Rotation.GetTransposed();
+}
+
+bool BuildPointSetup(const FPointLightSceneProxy& Light, uint32 Resolution, FLightShadowSetup& Out)
+{
+    Out.Resolution = Resolution;
+    const FPointLightInfo& Point = Light.GetInfo();
+    // D3D Cube 순서 +X,-X,+Y,-Y,+Z,-Z. 면의 Up도 Cube 조회 규약에 맞춘다.
+    const FVector Directions[] = {FVector(1,0,0), FVector(-1,0,0), FVector(0,1,0), FVector(0,-1,0), FVector(0,0,1), FVector(0,0,-1)};
+    const FVector Ups[] = {FVector(0,1,0), FVector(0,1,0), FVector(0,0,-1), FVector(0,0,1), FVector(0,1,0), FVector(0,1,0)};
+    FCameraProjection Projection;
+    Projection.FovDegrees = 90.0f;
+    constexpr float DefaultShadowNear = 0.01f;
+    Projection.NearClip = std::min(DefaultShadowNear, Point.AttenuationRadius * 0.01f);
+    Projection.FarClip = Point.AttenuationRadius;
+    const FMatrix ProjectionMatrix = Projection.GetMatrix(1.0f);
+
+    Out.PassCount = 6u;
+    for (uint32 Face = 0; Face < 6u; ++Face)
+    {
+        Out.FaceForward[Face] = Directions[Face];
+        Out.FaceUp[Face] = Ups[Face];
+        Out.FaceRight[Face] = FVector::Cross(Ups[Face], Directions[Face]);
+        Out.ViewProjections[Face] = MakeLightView(Point.Position, Out.FaceForward[Face], Out.FaceRight[Face], Out.FaceUp[Face]) * ProjectionMatrix;
+        Out.Frusta[Face] = ExtractFrustumPlanes(Out.ViewProjections[Face]);
+    }
+
+    Out.Context.LightType = ELightType::Point;
+    Out.Context.LightPosition = Point.Position;
+    Out.Context.ExtrudeDistance = Point.AttenuationRadius;
+    // 거리 d에서 텍셀 크기는 2 * d * tan(45도) / Res다.
+    Out.Context.TexelsPerUnit = 0.5f * static_cast<float>(Resolution);
+
+    // 공통 Light 정보에 면별 행렬을 더해 Atlas 조회 정보를 등록한다.
+    FShadowInfo& Info = Out.Info;
+    Info.LightPosition = Point.Position;
+    Info.InvRadius = 1.0f / Point.AttenuationRadius;
+    Info.LightType = static_cast<uint32>(ELightType::Point);
+    Info.Bias = Light.GetShadowBias() * Info.InvRadius;
+    Info.SlopeBias = Light.GetShadowSlopeBias();
+    Info.MaxSlope = Light.GetShadowMaxSlope();
+    // 면 중심 기준 T = 2 * d * tan(45도) / Res. 면 가장자리 텍셀은 더 작으므로 중심값이 상한이다.
+    Info.HalfTexelScale = 1.0f / static_cast<float>(Resolution);
+    Info.NormalOffset = Light.GetShadowNormalOffset();
+    Info.ShadowFilterMode = Light.GetShadowFilterMode();
+    // 면마다 90도 원근 Map이므로 Spot과 같은 식에서 tan(45도) = 1이다. 커널 UV = 광원 반지름 * (zR - zB) / (zB * zR) / (2 * 감쇠 반경).
+    Info.PenumbraScale = std::max(Light.GetSourceRadius(), 0.0f) * 0.5f * Info.InvRadius;
+    Info.PCSSNearDepth = Projection.NearClip * Info.InvRadius;
+    return true;
+}
+
+bool BuildSpotSetup(const FSpotLightSceneProxy& Light, uint32 Resolution, FLightShadowSetup& Out)
+{
+    Out.Resolution = Resolution;
+    const FSpotLightInfo& Spot = Light.GetInfo();
+    const FVector Forward = Spot.Direction.GetSafeNormal();
+    // Perspective에 유효한 전방 방향과 0 < 반각 < 90도가 필요하다.
+    if (Forward.Dot(Forward) == 0.0f || Spot.CosOuterCone <= 0.0f || Spot.CosOuterCone >= 1.0f) return false;
+    const FVector UpGuide = std::abs(Forward.Z) > 0.99f ? FVector(0, 1, 0) : FVector(0, 0, 1);
+    const FVector Right = FVector::Cross(UpGuide, Forward).GetSafeNormal();
+    const FVector Up = FVector::Cross(Forward, Right);
+    FCameraProjection Projection;
+    Projection.FovDegrees = FMath::RadiansToDegrees(2.0f * std::acos(Spot.CosOuterCone));
+    // 월드 거리 0.01을 기본으로 하되 작은 Light도 Far보다 작은 Near를 유지한다.
+    constexpr float DefaultShadowNear = 0.01f;
+    Projection.NearClip = std::min(DefaultShadowNear, Spot.AttenuationRadius * 0.01f);
+    Projection.FarClip = Spot.AttenuationRadius;
+    // 중심축 기준 T = 2 * d * tan(반각) / Res.
+    const float TanHalfFov = std::sqrt(1.0f - Spot.CosOuterCone * Spot.CosOuterCone) / Spot.CosOuterCone;
+
+    Out.PassCount = 1;
+    Out.ViewProjections[0] = MakeLightView(Spot.Position, Forward, Right, Up) * Projection.GetMatrix(1.0f);
+    Out.Frusta[0] = ExtractFrustumPlanes(Out.ViewProjections[0]);
+
+    Out.Context.LightType = ELightType::Spot;
+    Out.Context.LightPosition = Spot.Position;
+    Out.Context.ExtrudeDistance = Spot.AttenuationRadius;
+    Out.Context.TexelsPerUnit = static_cast<float>(Resolution) / (2.0f * TanHalfFov);
+
+    FShadowInfo& Info = Out.Info;
+    Info.ViewProjection = Out.ViewProjections[0];
+    Info.LightPosition = Spot.Position;
+    Info.InvRadius = 1.0f / Spot.AttenuationRadius;
+    Info.LightType = static_cast<uint32>(ELightType::Spot);
+    Info.Bias = Light.GetShadowBias() * Info.InvRadius;
+    Info.SlopeBias = Light.GetShadowSlopeBias();
+    Info.MaxSlope = Light.GetShadowMaxSlope();
+    Info.HalfTexelScale = TanHalfFov / static_cast<float>(Resolution);
+    Info.NormalOffset = Light.GetShadowNormalOffset();
+    Info.ShadowFilterMode = Light.GetShadowFilterMode();
+    // 거리 d의 섀도맵 UV 1은 월드 2 * d * tan(반각)이다. PCSS 커널 UV = 광원 반지름 * (zR - zB) / (zB * zR) / (2 * 감쇠 반경 * tan(반각)).
+    Info.PenumbraScale = std::max(Light.GetSourceRadius(), 0.0f) / (2.0f * Spot.AttenuationRadius * TanHalfFov);
+    Info.PCSSNearDepth = Projection.NearClip * Info.InvRadius;
+    return true;
+}
+
+bool BuildDirectionalSetup(UWorld& World, const FDirectionalLightSceneProxy& Light, uint32 Resolution, FLightShadowSetup& Out)
+{
+    Out.Resolution = Resolution;
+    const FVector Forward = Light.GetInfo().Direction.GetSafeNormal();
+    if (Forward.Dot(Forward) == 0.0f) return false;
+
+    // 기존 BVH가 갱신한 장면 경계를 재사용한다. 실제 Caster 선별은 Queue 수집에서 한다.
+    const FBox* Bounds = World.GetScene().BVH.GetRootBounds();
+    if (!Bounds) return false;
+    const FVector Center = (Bounds->Min + Bounds->Max) * 0.5f;
+    const float Radius = (Bounds->Max - Center).Size();
+    if (Radius <= 0.0f) return false;
+
+    // 장면 AABB를 덮는 구: Eye=C-d*2r, 폭/높이=2r, Near=r, Far=3r.
+    const FVector Eye = Center - Forward * (2.0f * Radius);
+    const FVector UpGuide = std::abs(Forward.Z) > 0.99f ? FVector(0, 1, 0) : FVector(0, 0, 1);
+    const FVector Right = FVector::Cross(UpGuide, Forward).GetSafeNormal();
+    const FVector Up = FVector::Cross(Forward, Right);
+    FCameraProjection Projection;
+    Projection.Mode = EProjectionMode::Orthographic;
+    Projection.OrthoWidth = 2.0f * Radius;
+    Projection.NearClip = Radius;
+    Projection.FarClip = 3.0f * Radius;
+
+    Out.PassCount = 1;
+    Out.ViewProjections[0] = MakeLightView(Eye, Forward, Right, Up) * Projection.GetMatrix(1.0f);
+    Out.Frusta[0] = ExtractFrustumPlanes(Out.ViewProjections[0]);
+
+    Out.Context.LightType = ELightType::Directional;
+    Out.Context.LightDirection = Forward;
+    // 장면 구 안의 Caster가 드리우는 그림자는 깊이 범위(Far - Near = 2r)를 넘지 않는다.
+    Out.Context.ExtrudeDistance = Projection.FarClip - Projection.NearClip;
+    Out.Context.SceneMin = Bounds->Min;
+    Out.Context.SceneMax = Bounds->Max;
+    Out.Context.TexelsPerUnit = static_cast<float>(Resolution) / Projection.OrthoWidth;
+
+    FShadowInfo& Info = Out.Info;
+    Info.ViewProjection = Out.ViewProjections[0];
+    Info.LightType = static_cast<uint32>(ELightType::Directional);
+    // Orthographic 깊이는 선형이므로 월드 거리를 Far-Near로 나누면 비교 깊이가 된다.
+    const float InvDepthRange = 1.0f / (Projection.FarClip - Projection.NearClip);
+    Info.InvRadius = InvDepthRange;
+    Info.Bias = Light.GetShadowBias() * InvDepthRange;
+    Info.SlopeBias = Light.GetShadowSlopeBias();
+    Info.MaxSlope = Light.GetShadowMaxSlope();
+    // Orthographic은 텍셀 크기가 맵 전체에서 일정하다: T = OrthoWidth / Res.
+    const float TexelSize = Projection.OrthoWidth / static_cast<float>(Resolution);
+    Info.HalfTexelScale = 0.5f * TexelSize;
+    Info.NormalOffset = Light.GetShadowNormalOffset();
+    Info.ShadowFilterMode = Light.GetShadowFilterMode();
+    // PCSS 커널 반경(월드) = 깊이 차 * tan(각지름/2). 깊이는 Far-Near, 가로는 OrthoWidth로 정규화한다.
+    const float HalfAngle = FMath::DegreesToRadians(std::max(Light.GetLightSourceAngle(), 0.0f)) * 0.5f;
+    Info.PenumbraScale = std::tan(HalfAngle) * (Projection.FarClip - Projection.NearClip) / Projection.OrthoWidth;
+    return true;
+}
+}
+
+void FSceneRenderer::BuildCascadeSplits(const FSceneView& View, const FShadowCascadeSettings& Settings, TArray<FShadowCascadeSplit>& OutSplits)
+{
+    OutSplits.Reset();
+    if (Settings.Count == 0) return;
+    const FMatrix& Projection = View.ProjectionMatrix;
+    const float Near = -Projection.M[3][2] / Projection.M[0][2];
+    const float ProjectionFar = (Projection.M[3][3] - Projection.M[3][2]) / (Projection.M[0][2] - Projection.M[0][3]);
+    const float Far = std::min(ProjectionFar, Settings.MaxDistance);
+    if (Far <= Near) return;
+    const double Exponent = std::clamp(Settings.DistributionExponent, 1.0f, 10.0f);
+    // 구간 길이를 1, e, e^2, ... 비율로 배분한다. e=1도 같은 합산으로 균등 분할된다.
+    double TotalWeight = 0.0;
+    double Weight = 1.0;
+    for (uint32 Index = 0; Index < Settings.Count; ++Index)
+    {
+        TotalWeight += Weight;
+        Weight *= Exponent;
+    }
+    double CumulativeWeight = 0.0;
+    Weight = 1.0;
+    const float BlendRatio = std::clamp(Settings.BlendRatio, 0.0f, 0.5f);
+    float PreviousDepth = Near;
+    for (uint32 Index = 0; Index < Settings.Count; ++Index)
+    {
+        CumulativeWeight += Weight;
+        Weight *= Exponent;
+        FShadowCascadeSplit Split;
+        Split.NearDepth = PreviousDepth;
+        Split.ProjectionNearDepth = Split.NearDepth;
+        if (Index > 0)
+        {
+            const FShadowCascadeSplit& Previous = OutSplits[Index - 1];
+            Split.ProjectionNearDepth -= BlendRatio * (Previous.FarDepth - Previous.NearDepth);
+        }
+
+        Split.FarDepth = Index + 1 == Settings.Count ? Far : static_cast<float>(Near + (Far - Near) * (CumulativeWeight / TotalWeight));
+        PreviousDepth = Split.FarDepth;
+        OutSplits.Add(std::move(Split));
+    }
+}
+
+void FSceneRenderer::BuildCascadeProjections(const FSceneView& View, const FVector& LightDirection, uint32 Resolution, TArray<FShadowCascadeSplit>& Splits)
+{
+    const FVector Forward = LightDirection.GetSafeNormal();
+    if (Resolution == 0 || Forward.SizeSquared() == 0.0f)
+    {
+        Splits.Reset();
+        return;
+    }
+    const FVector UpGuide = std::abs(Forward.Z) > 0.99f ? FVector(0, 1, 0) : FVector(0, 0, 1);
+    const FVector Right = FVector::Cross(UpGuide, Forward).GetSafeNormal();
+    const FVector Up = FVector::Cross(Forward, Right);
+    FMatrix Rotation = FMatrix::Identity;
+    Rotation.SetAxis(0, Forward);
+    Rotation.SetAxis(1, Right);
+    Rotation.SetAxis(2, Up);
+    const float InvScaleX = 1.0f / View.ProjectionMatrix.M[1][0];
+    const float InvScaleY = 1.0f / View.ProjectionMatrix.M[2][1];
+    const float DiagonalScaleSquared = InvScaleX * InvScaleX + InvScaleY * InvScaleY;
+    for (FShadowCascadeSplit& Split : Splits)
+    {
+        // 카메라 공간에서 계산하여 같은 투영·분할의 반지름이 카메라 이동·회전에 의존하지 않게 한다.
+        const float NearScale = View.IsOrthographic() ? 1.0f : Split.ProjectionNearDepth;
+        const float FarScale = View.IsOrthographic() ? 1.0f : Split.FarDepth;
+        const float NearDiagonalSquared = NearScale * NearScale * DiagonalScaleSquared;
+        const float FarDiagonalSquared = FarScale * FarScale * DiagonalScaleSquared;
+        const float Length = Split.FarDepth - Split.ProjectionNearDepth;
+        const float CenterDepth = std::clamp((Split.ProjectionNearDepth + Split.FarDepth) * 0.5f + (FarDiagonalSquared - NearDiagonalSquared) / (2.0f * Length), Split.ProjectionNearDepth, Split.FarDepth);
+        const float NearOffset = CenterDepth - Split.ProjectionNearDepth;
+        const float FarOffset = Split.FarDepth - CenterDepth;
+        const float Radius = std::sqrt(std::max(NearOffset * NearOffset + NearDiagonalSquared, FarOffset * FarOffset + FarDiagonalSquared));
+        Split.SphereCenter = View.RenderLocation + View.CameraForward * CenterDepth;
+        Split.SphereRadius = Radius;
+
+        // Texel Snapping - 경계를 텍셀 격자에 맞추어서 shimmering 현상을 해결한다.
+        const float HalfExtent = Resolution > 1 ? Radius * (static_cast<float>(Resolution) / (Resolution - 1)) : Radius;
+        const float TexelSize = 2.0f * HalfExtent / Resolution;
+        float CenterRight = Split.SphereCenter.Dot(Right);
+        float CenterUp = Split.SphereCenter.Dot(Up);
+        if (Resolution > 1)
+        {
+            CenterRight = std::round(CenterRight / TexelSize) * TexelSize;
+            CenterUp = std::round(CenterUp / TexelSize) * TexelSize;
+        }
+        const FVector Eye = Forward * (Split.SphereCenter.Dot(Forward) - 2.0f * Radius) + Right * CenterRight + Up * CenterUp;
+        const FMatrix LightView = FMatrix::MakeTranslation(-Eye) * Rotation.GetTransposed();
+
+        FCameraProjection Projection;
+        Projection.Mode = EProjectionMode::Orthographic;
+        Projection.OrthoWidth = 2.0f * HalfExtent;
+        Projection.NearClip = Radius;
+        Projection.FarClip = 3.0f * Radius;
+        Split.DepthPass.ViewProjection = LightView * Projection.GetMatrix(1.0f);
+    }
+}
+
+void FSceneRenderer::BuildCascadeCasterQueues(UWorld& World, uint32 RequestIndex, TArray<FShadowCascadeSplit>& Splits, uint32 Resolution, FShadowCullingStats& Stats)
+{
+    const FBox* Bounds = World.GetScene().BVH.GetRootBounds();
+    for (uint32 Index = 0; Index < static_cast<uint32>(Splits.Num()); ++Index)
+    {
+        FShadowDepthPassInfo& Pass = Splits[Index].DepthPass;
+        Pass.RequestIndex = RequestIndex;
+        Pass.Frustum = ExtractFrustumPlanes(Pass.ViewProjection);
+        if (Bounds)
+        {
+            // ExtractFrustumPlanes의 4번은 near다. 안쪽 법선이므로 Distance를 늘리면 빛 쪽으로 확장된다.
+            FPlane& Near = Pass.Frustum.Planes[4];
+            const FVector Center = (Bounds->Min + Bounds->Max) * 0.5f;
+            const FVector Extent = (Bounds->Max - Bounds->Min) * 0.5f;
+            const float SceneNearDistance = Near.Normal.GetAbs().Dot(Extent) - Near.Normal.Dot(Center);
+            Near.Distance = std::max(Near.Distance, SceneNearDistance);
+        }
+        FShadowCasterCullContext Context;
+        Context.LightType = ELightType::Directional;
+        Context.LightDirection = Pass.Frustum.Planes[4].Normal.GetSafeNormal();
+        const float Radius = Splits[Index].SphereRadius;
+        const float HalfExtent = Resolution > 1 ? Radius * (static_cast<float>(Resolution) / (Resolution - 1)) : Radius;
+        Context.TexelsPerUnit = static_cast<float>(Resolution) / (2.0f * HalfExtent);
+        if (Bounds)
+        {
+            Context.SceneMin = Bounds->Min;
+            Context.SceneMax = Bounds->Max;
+            // near 앞 caster도 receiver까지 그림자를 늘릴 수 있도록 장면 전체 길이를 사용한다.
+            Context.ExtrudeDistance = (Bounds->Max - Bounds->Min).Size();
+        }
+        FShadowCascadeCasterStats CascadeStats;
+        CascadeStats.CastersConsidered = Stats.CastersConsidered;
+        CascadeStats.CastersCulledBySize = Stats.CastersCulledBySize;
+        CascadeStats.CastersDrawn = Stats.CastersDrawn;
+        BuildShadowCasterQueue(World, Pass, Context, Stats);
+        CascadeStats.CastersConsidered = Stats.CastersConsidered - CascadeStats.CastersConsidered;
+        CascadeStats.CastersCulledBySize = Stats.CastersCulledBySize - CascadeStats.CastersCulledBySize;
+        CascadeStats.CastersDrawn = Stats.CastersDrawn - CascadeStats.CastersDrawn;
+        Stats.CascadeCasters.Add(CascadeStats);
+        ++Stats.ShadowPassesDrawn;
+    }
+}
+
+void FSceneRenderer::PrepareShadows(UWorld& World, FShadowFrameData& OutData, std::initializer_list<ELightType> LightTypes, const FSceneView* View)
+{
+    OutData.ResetFrame();
+    OutData.CullingStats = {};
+    if (!bFrameActive) return;
+
+    PreparingShadowViews.Reset();
+    if (View)
+    {
+        FShadowCullingView CullingView;
+        CullingView.Frustum = View->Frustum;
+        CullingView.Location = View->GetCameraLocation();
+        CullingView.bOrthographic = View->IsOrthographic();
+        CullingView.InvViewHeight = View->ViewRect.Height > 0.0f ? 1.0f / View->ViewRect.Height : 0.0f;
+        CullingView.PixelsPerUnit = 0.5f * View->ViewRect.Height * View->ProjectionMatrix.M[2][1];
+        PreparingShadowViews.Add(CullingView);
+    }
+    else
+        for (const FRegisteredShadowView& Registered : RegisteredShadowViews)
+            if (Registered.World == &World) PreparingShadowViews.Add(Registered.View);
+
+    BuildShadowRequests(World.GetScene(), OutData, LightTypes);
+    FShadowCullingStats& Stats = OutData.CullingStats;
+    for (uint32 Index = 0; Index < static_cast<uint32>(OutData.ShadowRequestsPerLight.Num()); ++Index)
+    {
+        FShadowRequestPerLight& Request = OutData.ShadowRequestsPerLight[Index];
+        const FLightSceneProxy* Light = Request.Light;
+        const bool bLocal = Light->GetLightType() == ELightType::Spot || Light->GetLightType() == ELightType::Point;
+        Request.ScreenRatio = bLocal ? ComputeLocalShadowScreenRatio(*Light, PreparingShadowViews) : 0.0f;
+        const uint32 Resolution = bLocal
+            ? CalcShadowTileResolution(Request.ScreenRatio, Light->GetShadowMapResolution())
+            : Light->GetShadowMapResolution();
+        if (Resolution == 0)
+        {
+            ++Stats.LightsCulledByScreenSize;
+            continue;
+        }
+        if (Light->GetLightType() == ELightType::Directional &&
+            !HasVisibleShadowReceiver(World.GetScene(), PreparingShadowViews))
+        {
+            ++Stats.LightsCulledByNoReceiver;
+            continue;
+        }
+        OutData.Resolution = Resolution;
+        if (Light->GetLightType() == ELightType::Directional && static_cast<const FDirectionalLightSceneProxy*>(Light)->UsesCSM())
+        {
+            if (View)
+            {
+                const auto* Directional = static_cast<const FDirectionalLightSceneProxy*>(Light);
+                PrepareDirectionalShadowCSM(World, OutData, View, Index, Directional, Resolution);
+            }
+            continue;
+        }
+        FLightShadowSetup Setup;
+        bool bValidSetup = false;
+        switch (Light->GetLightType())
+        {
+        case ELightType::Directional:
+            bValidSetup = BuildDirectionalSetup(World, *static_cast<const FDirectionalLightSceneProxy*>(Light), Resolution, Setup);
+            break;
+        case ELightType::Spot:
+            bValidSetup = BuildSpotSetup(*static_cast<const FSpotLightSceneProxy*>(Light), Resolution, Setup);
+            break;
+        case ELightType::Point:
+            bValidSetup = BuildPointSetup(*static_cast<const FPointLightSceneProxy*>(Light), Resolution, Setup);
+            break;
+        default:
+            break;
+        }
+        if (!bValidSetup) continue;
+
+        const bool bCube = Light->GetLightType() == ELightType::Point;
+        FShadowDepthPassInfo Passes[MaxShadowPassesPerLight];
+        bool bHasCaster = false;
+        for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+        {
+            FShadowDepthPassInfo& Pass = Passes[Face];
+            Pass.RequestIndex = Index;
+            Pass.ViewProjection = Setup.ViewProjections[Face];
+            Pass.Frustum = Setup.Frusta[Face];
+            if (bCube && ShadowCullingSettings.bCullLightsByView &&
+                !IsPointFaceVisible(Setup.Context.LightPosition, Setup.Context.ExtrudeDistance, Setup.FaceForward[Face], Setup.FaceRight[Face], Setup.FaceUp[Face], PreparingShadowViews))
+                ++Stats.PointFacesCulled;
+            else
+                BuildShadowCasterQueue(World, Pass, Setup.Context, Stats);
+            bHasCaster = bHasCaster || !Pass.CasterPackets.IsEmpty();
+        }
+        if (!bHasCaster)
+        {
+            ++Stats.LightsCulledByNoCaster;
+            continue;
+        }
+
+        for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+        {
+            FShadowInfo Info = Setup.Info;
+            Info.ViewProjection = Setup.ViewProjections[Face];
+            Passes[Face].MapRequestIndex = RegisterShadowMap(OutData, Index, Info, Setup.Resolution);
+            OutData.ShadowDepthPassInfos.Add(std::move(Passes[Face]));
+            ++Stats.ShadowPassesDrawn;
+        }
+        ++Stats.LightsRendered;
+    }
+}
+
+const FShadowFrameData* FSceneRenderer::PrepareWorldShadows(UWorld& World, uint32 ResourceIndex)
+{
+    if (!bFrameActive || ResourceIndex >= MaxShadowResourceSlots) return nullptr;
+    FWorldShadowFrame& Slot = WorldShadowFrames[ResourceIndex];
+    if (Slot.PreparedFrame == FrameNumber) return &Slot.Data;
+
+    if (Slot.AtlasAllocator.GetAtlasSize() != DefaultShadowAtlasSize)
+    {
+        if (!Slot.AtlasAllocator.Initialize(DefaultShadowAtlasSize, MinShadowAtlasTileSize)) return nullptr;
+        Slot.CacheEntries.Reset();
+    }
+
+
+    PreparingShadowViews.Reset();
+    for (const FRegisteredShadowView& Registered : RegisteredShadowViews)
+        if (Registered.World == &World) PreparingShadowViews.Add(Registered.View);
+
+    BuildShadowRequests(World.GetScene(), Slot.Data, {ELightType::Point, ELightType::Spot});
+    Slot.Data.ShadowAtlasSize = DefaultShadowAtlasSize;
+    FShadowCullingStats& Stats = Slot.Data.CullingStats;
+    const bool bCaching = ShadowCullingSettings.bCacheShadowMaps;
+    Stats.bCaching = bCaching;
+
+    // 1. 캐시 무효화. 기준이 바뀌었으면 전부, 아니면 바뀐 Caster의 바운드가 걸친 면만 무효로 한다.
+    //    이번 프레임에 그리지 않는(View 등으로 컬링된) Light의 캐시에도 적용해야 다음에 쓸 때 낡은 내용이 남지 않는다.
+    TArray<FAABB> Invalidations;
+    bool bInvalidateAll = false;
+    World.GetScene().ConsumeShadowInvalidations(Invalidations, bInvalidateAll);
+    bInvalidateAll = bInvalidateAll || !bCaching || !Slot.bCacheActive
+        || Slot.CachedResolution != Slot.Data.Resolution
+        || Slot.CachedMinCasterTexels != ShadowCullingSettings.MinCasterTexels;
+    Slot.bCacheActive = bCaching;
+    Slot.CachedResolution = Slot.Data.Resolution;
+    Slot.CachedMinCasterTexels = ShadowCullingSettings.MinCasterTexels;
+    for (auto& Pair : Slot.CacheEntries)
+    {
+        FShadowCacheEntry& Entry = Pair.second;
+        Entry.bSeen = false;
+        for (uint32 Face = 0; Face < Entry.PassCount; ++Face)
+        {
+            if (!Entry.bFaceValid[Face]) continue;
+            bool bHit = bInvalidateAll;
+            for (int32 Index = 0; Index < Invalidations.Num() && !bHit; ++Index)
+                bHit = IsAABBInFrustum(Invalidations[Index], Entry.Frusta[Face]);
+            if (!bHit) continue;
+            Entry.bFaceValid[Face] = false;
+            if (!bInvalidateAll) ++Stats.CacheFacesInvalidatedByCaster;
+        }
+    }
+    for (uint32 LightId : Slot.Data.ConsideredLightIds)
+        if (FShadowCacheEntry* Entry = Slot.CacheEntries.Find(LightId)) Entry->bSeen = true;
+
+    // 신규 요청을 배치하기 전에 삭제되거나 CastShadow가 꺼진 Light의 영역을 반환한다.
+    for (auto Iterator = Slot.CacheEntries.begin(); Iterator != Slot.CacheEntries.end();)
+    {
+        const auto Current = Iterator++;
+        if (Current->second.bSeen) continue;
+        for (const FShadowAtlasRect& Rect : Current->second.AtlasRects)
+            Slot.AtlasAllocator.Free(Rect.NodeIndex);
+        Slot.CacheEntries.Remove(Current->first);
+    }
+
+
+    // 2. 실제 타일 해상도가 큰 광원부터 처리한다. Point의 6면은 요청 하나로 유지한다.
+    // 아직 Map/Pass 인덱스를 만들기 전이므로 광원 요청 순서를 바꿔도 참조가 유지된다.
+    for (FShadowRequestPerLight& Request : Slot.Data.ShadowRequestsPerLight)
+        Request.ScreenRatio = ComputeLocalShadowScreenRatio(*Request.Light, PreparingShadowViews);
+    std::stable_sort(Slot.Data.ShadowRequestsPerLight.begin(), Slot.Data.ShadowRequestsPerLight.end(),
+        [](const FShadowRequestPerLight& A, const FShadowRequestPerLight& B)
+        {
+            return CalcShadowTileResolution(A.ScreenRatio, A.Light->GetShadowMapResolution())
+                > CalcShadowTileResolution(B.ScreenRatio, B.Light->GetShadowMapResolution());
+        });
+
+    // 같은 해상도는 기존 순서를 유지하고, 캐시된 타일은 기존 위치를 재사용한다.
+    for (uint32 Index = 0; Index < static_cast<uint32>(Slot.Data.ShadowRequestsPerLight.Num()); ++Index)
+    {
+        FShadowRequestPerLight& Request = Slot.Data.ShadowRequestsPerLight[Index];
+        const FLightSceneProxy* Light = Request.Light;
+        const uint32 Resolution = CalcShadowTileResolution(Request.ScreenRatio, Light->GetShadowMapResolution());
+        if (Resolution == 0)
+        {
+            // 렌더 제외 시 지난 프레임에 쓰던 실제 Atlas 영역도 반환한다.
+            const uint32 LightId = Light->GetComponent()->GetUUID();
+            if (const FShadowCacheEntry* Entry = Slot.CacheEntries.Find(LightId))
+                for (const FShadowAtlasRect& Rect : Entry->AtlasRects)
+                    Slot.AtlasAllocator.Free(Rect.NodeIndex);
+            Slot.CacheEntries.Remove(LightId);
+            ++Stats.LightsCulledByScreenSize;
+            continue;
+        }
+        FLightShadowSetup Setup;
+        bool bValidSetup = false;
+        switch (Light->GetLightType())
+        {
+        case ELightType::Spot:
+            bValidSetup = BuildSpotSetup(*static_cast<const FSpotLightSceneProxy*>(Light), Resolution, Setup);
+            break;
+        case ELightType::Point:
+            bValidSetup = BuildPointSetup(*static_cast<const FPointLightSceneProxy*>(Light), Resolution, Setup);
+            break;
+        default:
+            break;
+        }
+        if (bValidSetup && PrepareLightShadow(World, Index, Slot, Setup)) ++Stats.LightsRendered;
+    }
+
+    Slot.PreparedFrame = FrameNumber;
+    return &Slot.Data;
+}
+
+bool FSceneRenderer::PrepareLightShadow(UWorld& World, uint32 RequestIndex, FWorldShadowFrame& Slot, const FLightShadowSetup& Setup)
+{
+    FShadowFrameData& Frame = Slot.Data;
+    FShadowCullingStats& Stats = Frame.CullingStats;
+    FShadowRequestPerLight& Request = Frame.ShadowRequestsPerLight[RequestIndex];
+    const bool bCaching = ShadowCullingSettings.bCacheShadowMaps;
+    const bool bCube = Setup.PassCount == 6u;
+
+    FShadowCacheEntry& Entry = Slot.CacheEntries[Request.Light->GetComponent()->GetUUID()];
+    Entry.bSeen = true;
+
+    // 캐시 키 비교. 행렬이 하나라도 다르면 Light가 바뀐 것이므로 모든 면을 다시 그린다.
+    bool bKeyChanged = Entry.PassCount != Setup.PassCount || Entry.Resolution != Setup.Resolution;
+    for (uint32 Face = 0; Face < Setup.PassCount && !bKeyChanged; ++Face)
+        bKeyChanged = std::memcmp(&Entry.ViewProjections[Face], &Setup.ViewProjections[Face], sizeof(FMatrix)) != 0;
+    if (bKeyChanged)
+    {
+        if (bCaching && Entry.PassCount != 0) ++Stats.CacheLightsInvalidated;
+        Entry.PassCount = Setup.PassCount;
+        Entry.Resolution = Setup.Resolution;
+        for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+        {
+            Entry.ViewProjections[Face] = Setup.ViewProjections[Face];
+            Entry.Frusta[Face] = Setup.Frusta[Face];
+            Entry.bFaceValid[Face] = false;
+        }
+    }
+
+    // 해상도 변경 시 이전 영역을 먼저 반환해야 공간이 꽉 찬 상태에서도 축소할 수 있다.
+    if (!Entry.AtlasRects.IsEmpty() &&
+        (Entry.AtlasRects.Num() != Setup.PassCount || Entry.AtlasRects[0].Size != Setup.Resolution))
+    {
+        for (const FShadowAtlasRect& Rect : Entry.AtlasRects)
+            Slot.AtlasAllocator.Free(Rect.NodeIndex);
+        Entry.AtlasRects.Reset();
+    }
+
+    FShadowDepthPassInfo Passes[MaxShadowPassesPerLight];
+    bool bRebuilt[MaxShadowPassesPerLight] = {};
+    const auto RebuildFace = [&](uint32 Face)
+    {
+        FShadowDepthPassInfo& Pass = Passes[Face];
+        Pass.RequestIndex = RequestIndex;
+        Pass.ViewProjection = Setup.ViewProjections[Face];
+        Pass.Frustum = Setup.Frusta[Face];
+        // 캐싱 중에는 면 내용이 카메라에 의존하면 안 되므로 면 View 컬링을 하지 않는다.
+        if (!bCaching && bCube && ShadowCullingSettings.bCullLightsByView &&
+            !IsPointFaceVisible(Setup.Context.LightPosition, Setup.Context.ExtrudeDistance, Setup.FaceForward[Face], Setup.FaceRight[Face], Setup.FaceUp[Face], PreparingShadowViews))
+            ++Stats.PointFacesCulled;
+        else
+            BuildShadowCasterQueue(World, Pass, Setup.Context, Stats);
+        Entry.bFaceHasCaster[Face] = Pass.CasterPackets.Num() > 0;
+        bRebuilt[Face] = true;
+    };
+    // 캐싱을 끄면 매 프레임 모든 면을 다시 그린다.
+    for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+        if (!bCaching || !Entry.bFaceValid[Face]) RebuildFace(Face);
+
+    bool bHasCaster = false;
+    for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+        bHasCaster = bHasCaster || Entry.bFaceHasCaster[Face];
+    if (!bHasCaster)
+    {
+        // 그릴 Caster가 없으면 슬롯도 필요 없다. 다시 모은 면은 "비어 있음"으로 유효 처리해 무효화될 때까지 다시 모으지 않는다.
+        for (const FShadowAtlasRect& Rect : Entry.AtlasRects)
+            Slot.AtlasAllocator.Free(Rect.NodeIndex);
+        Entry.AtlasRects.Reset();
+        for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+            if (bRebuilt[Face]) Entry.bFaceValid[Face] = bCaching;
+        ++Stats.LightsCulledByNoCaster;
+        return false;
+    }
+    if (Entry.AtlasRects.Num() != Setup.PassCount || Entry.AtlasRects[0].Size != Setup.Resolution)
+    {
+        TArray<FShadowAtlasRect> NewRects;
+        for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+        {
+            FShadowAtlasRect Rect;
+            if (!Slot.AtlasAllocator.Allocate(Setup.Resolution, Rect))
+            {
+                for (const FShadowAtlasRect& Allocated : NewRects)
+                    Slot.AtlasAllocator.Free(Allocated.NodeIndex);
+                return false;
+            }
+            NewRects.Add(Rect);
+        }
+        for (const FShadowAtlasRect& Rect : Entry.AtlasRects)
+            Slot.AtlasAllocator.Free(Rect.NodeIndex);
+        Entry.AtlasRects = std::move(NewRects);
+        // 새 영역은 모든 면을 초기화해야 한다.
+        for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+            if (!bRebuilt[Face]) RebuildFace(Face);
+    }
+
+    // 다시 모은 면만 그린다. 빈 면도 패스를 내서 Clear한다.
+    for (uint32 Face = 0; Face < Setup.PassCount; ++Face)
+    {
+        FShadowInfo Info = Setup.Info;
+        Info.ViewProjection = Setup.ViewProjections[Face];
+        const uint32 MapIndex = RegisterShadowMap(Frame, RequestIndex, Info, Setup.Resolution);
+        FShadowMapRequest& Map = Frame.ShadowMapRequests[MapIndex];
+        Map.AtlasRect = Entry.AtlasRects[Face];
+        const FShadowAtlasRect& Rect = Map.AtlasRect;
+        const float InvSize = 1.0f / Frame.ShadowAtlasSize;
+        Frame.ShadowInfos[Map.ShadowInfoIndex].AtlasUVScaleBias = FVector4(
+            Rect.Size * InvSize, Rect.Size * InvSize, Rect.X * InvSize, Rect.Y * InvSize);
+        if (!bRebuilt[Face])
+        {
+            ++Stats.ShadowPassesCached;
+            continue;
+        }
+        Passes[Face].MapRequestIndex = MapIndex;
+        Frame.ShadowDepthPassInfos.Add(std::move(Passes[Face]));
+        Entry.bFaceValid[Face] = bCaching;
+        ++Stats.ShadowPassesDrawn;
+    }
+
+    return true;
+}
+
+void FSceneRenderer::ReleaseWorldShadows(uint32 ResourceIndex)
+{
+    if (ResourceIndex >= MaxShadowResourceSlots) return;
+    FWorldShadowFrame& Slot = WorldShadowFrames[ResourceIndex];
+    Slot.Data.ResetFrame();
+    Slot.PreparedFrame = 0;
+    // GPU Atlas와 함께 버려지므로 캐시와 할당도 처음 상태로 돌린다.
+    Slot.CacheEntries.Reset();
+    Slot.AtlasAllocator = FShadowAtlasAllocator{};
+    Slot.bCacheActive = false;
+    Slot.CachedResolution = 0;
+    Slot.CachedMinCasterTexels = -1.0f;
+}
+
+void FSceneRenderer::InvalidateShadowCache(uint32 ResourceIndex)
+{
+    if (ResourceIndex >= MaxShadowResourceSlots) return;
+    for (auto& Pair : WorldShadowFrames[ResourceIndex].CacheEntries)
+        for (bool& bValid : Pair.second.bFaceValid) bValid = false;
+}
+
+void FSceneRenderer::PrepareDirectionalShadowCSM(UWorld& World, FShadowFrameData& OutData, const FSceneView* View, uint32 Index, const FDirectionalLightSceneProxy* Light, uint32 ShadowResolution)
+{
+    BuildCascadeSplits(*View, Light->GetCascadeSettings(), OutData.CascadeSplits);
+    BuildCascadeProjections(*View, Light->GetInfo().Direction, ShadowResolution, OutData.CascadeSplits);
+    BuildCascadeCasterQueues(World, Index, OutData.CascadeSplits, ShadowResolution, OutData.CullingStats);
+    if (!OutData.CascadeSplits.IsEmpty())
+    {
+        ++OutData.CullingStats.LightsRendered;
+        for (FShadowCascadeSplit& Split : OutData.CascadeSplits)
+        {
+            FShadowInfo Info;
+            Info.ViewProjection = Split.DepthPass.ViewProjection;
+            Info.LightType = static_cast<uint32>(ELightType::Directional);
+            // 실제 투영 깊이(구의 지름)로 정규화한다.
+            const float InvDepthRange = 1.0f / (2.0f * Split.SphereRadius);
+            Info.InvRadius = InvDepthRange;
+            Info.Bias = Light->GetShadowBias() * InvDepthRange;
+            Info.SlopeBias = Light->GetShadowSlopeBias();
+            Info.MaxSlope = Light->GetShadowMaxSlope();
+            const float HalfExtent = ShadowResolution > 1 ? Split.SphereRadius * (static_cast<float>(ShadowResolution) / (ShadowResolution - 1)) : Split.SphereRadius;
+            Info.HalfTexelScale = HalfExtent / static_cast<float>(ShadowResolution);
+            Info.NormalOffset = Light->GetShadowNormalOffset();
+            Info.ShadowFilterMode = Light->GetShadowFilterMode();
+            // PCSS 커널 반경(월드) = 깊이 차 * tan(각지름/2). Cascade마다 깊이 범위(2 * 구 반지름)와 투영 폭(2 * HalfExtent)이 다르다.
+            const float HalfAngle = FMath::DegreesToRadians(std::max(Light->GetLightSourceAngle(), 0.0f)) * 0.5f;
+            Info.PenumbraScale = std::tan(HalfAngle) * (2.0f * Split.SphereRadius) / (2.0f * HalfExtent);
+            Split.DepthPass.MapRequestIndex = RegisterShadowMap(OutData, Index, Info, ShadowResolution);
+        }
+    }
+}
+
+uint32 FSceneRenderer::RegisterShadowMap(FShadowFrameData& Frame, uint32 LightRequestIndex, const FShadowInfo& Info, uint32 Resolution)
+{
+    FShadowRequestPerLight& LightRequest = Frame.ShadowRequestsPerLight[LightRequestIndex];
+
+    const uint32 ShadowInfoIndex = Frame.ShadowInfos.Add(Info);
+
+    // Light는 첫 Map의 GPU 조회 정보 번호를 가리킨다.
+    if (LightRequest.ShadowIndex == InvalidShadowIndex)
+    {
+        LightRequest.ShadowIndex = ShadowInfoIndex;
+    }
+
+    assert(ShadowInfoIndex == LightRequest.ShadowIndex + LightRequest.ShadowMapCount);
+    ++LightRequest.ShadowMapCount;
+    Frame.ShadowInfos[LightRequest.ShadowIndex].MapCount = LightRequest.ShadowMapCount;
+
+    FShadowMapRequest MapRequest;
+    MapRequest.LightRequestIndex = LightRequestIndex;
+    MapRequest.ShadowInfoIndex = ShadowInfoIndex;
+    MapRequest.Resolution = Resolution;
+
+    return Frame.ShadowMapRequests.Add(MapRequest);
+}
+
+bool FSceneRenderer::AllocateDirectionalShadowMaps(FShadowFrameData& Frame)
+{
+    // Directional은 매 View마다 다시 그리므로 이전 View의 영역을 유지할 필요가 없다.
+    FShadowAtlasAllocator Allocator;
+    if (!Allocator.Initialize(DefaultShadowAtlasSize, MinShadowAtlasTileSize)) return false;
+    Frame.ShadowAtlasSize = DefaultShadowAtlasSize;
+    TArray<FShadowAtlasRect> Rects;
+    for (const FShadowMapRequest& Map : Frame.ShadowMapRequests)
+    {
+        FShadowAtlasRect Rect;
+        if (Map.ShadowInfoIndex >= Frame.ShadowInfos.Num() ||
+            !Allocator.Allocate(Map.Resolution, Rect))
+        {
+            for (FShadowRequestPerLight& Request : Frame.ShadowRequestsPerLight)
+                Request.ShadowIndex = InvalidShadowIndex;
+            Frame.CullingStats.ShadowPassesDrawn = 0;
+            Frame.CullingStats.LightsRendered = 0;
+            return false;
+        }
+        Rects.Add(Rect);
+    }
+    const float InvSize = 1.0f / Frame.ShadowAtlasSize;
+    for (uint32 Index = 0; Index < Rects.Num(); ++Index)
+    {
+        FShadowMapRequest& Map = Frame.ShadowMapRequests[Index];
+        const FShadowAtlasRect& Rect = Rects[Index];
+        Map.AtlasRect = Rect;
+        Frame.ShadowInfos[Map.ShadowInfoIndex].AtlasUVScaleBias = FVector4(
+            Rect.Size * InvSize, Rect.Size * InvSize, Rect.X * InvSize, Rect.Y * InvSize);
+    }
+    return true;
+}

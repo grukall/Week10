@@ -1,0 +1,199 @@
+{
+    "Version": 1,
+    "Duration": 4.0,
+    "DisplayRate": 30.0,
+    "CameraBlendIn": 1.0,
+    "CameraBlendOut": 1.0,
+    "Bindings": [
+        {
+            "Name": "CineCam",
+            "Tag": "CineCam",
+            "CineCamera": true,
+            "Template": {
+                "Class": "ACameraActor",
+                "Properties": {},
+                "Components": [
+                    {
+                        "Name": "CameraComponent",
+                        "Class": "UCameraComponent",
+                        "Parent": "",
+                        "Properties": {
+                            "FieldOfView": 60.0,
+                            "Transform": {
+                                "Location": { "X": -9.0, "Y": -2.0, "Z": 1.2 },
+                                "Rotation": { "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0 },
+                                "Scale": { "X": 1.0, "Y": 1.0, "Z": 1.0 }
+                            }
+                        }
+                    }
+                ]
+            },
+            "Tracks": [
+                {
+                    "Type": "Transform",
+                    "Property": "",
+                    "Sections": [
+                        {
+                            "Start": 0.0,
+                            "End": 4.0,
+                            "Channels": {
+                                "Location.X": [
+                                    { "Time": 0.0, "Value": -9.0, "Interp": "Cubic" },
+                                    { "Time": 4.0, "Value": -6.0, "Interp": "Cubic" }
+                                ],
+                                "Location.Y": [
+                                    { "Time": 0.0, "Value": -2.0, "Interp": "Linear" },
+                                    { "Time": 4.0, "Value": 2.0, "Interp": "Linear" }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "Type": "Float",
+                    "Property": "CameraComponent.FieldOfView",
+                    "Sections": [
+                        {
+                            "Start": 0.0,
+                            "End": 4.0,
+                            "Channels": {
+                                "Value": [
+                                    { "Time": 0.0, "Value": 60.0, "Interp": "Cubic" },
+                                    { "Time": 4.0, "Value": 40.0, "Interp": "Cubic" }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "Name": "Hero",
+            "Tag": "Hero",
+            "Template": null,
+            "Tracks": [
+                {
+                    "Type": "Transform",
+                    "Property": "",
+                    "Sections": [
+                        {
+                            "Start": 0.0,
+                            "End": 4.0,
+                            "Channels": {
+                                "Location.X": [
+                                    { "Time": 0.0, "Value": 0.0, "Interp": "Cubic" },
+                                    { "Time": 2.0, "Value": 3.0, "Interp": "Cubic" },
+                                    { "Time": 4.0, "Value": 0.0, "Interp": "Cubic" }
+                                ],
+                                "Location.Z": [
+                                    { "Time": 0.0, "Value": 0.0, "Interp": "Cubic" },
+                                    { "Time": 1.0, "Value": 1.5, "Interp": "Cubic" },
+                                    { "Time": 2.0, "Value": 0.0, "Interp": "Cubic" },
+                                    { "Time": 3.0, "Value": 1.5, "Interp": "Cubic" },
+                                    { "Time": 4.0, "Value": 0.0, "Interp": "Cubic" }
+                                ],
+                                "Rotation.Yaw": [
+                                    { "Time": 0.0, "Value": 0.0, "Interp": "Linear" },
+                                    { "Time": 4.0, "Value": 360.0, "Interp": "Linear" }
+                                ],
+                                "Scale.Z": [
+                                    { "Time": 0.0, "Value": 1.0, "Interp": "Cubic" },
+                                    { "Time": 2.0, "Value": 2.0, "Interp": "Cubic" },
+                                    { "Time": 4.0, "Value": 1.0, "Interp": "Cubic" }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "Type": "Bool",
+                    "Property": "UStaticMeshComponent.bVisible",
+                    "Sections": [
+                        {
+                            "Start": 0.0,
+                            "End": 4.0,
+                            "Channels": {
+                                "Value": [
+                                    { "Time": 0.0, "Value": 1.0, "Interp": "Constant" },
+                                    { "Time": 2.8, "Value": 0.0, "Interp": "Constant" },
+                                    { "Time": 3.2, "Value": 1.0, "Interp": "Constant" }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "Name": "Lamp",
+            "Tag": "Lamp",
+            "Template": null,
+            "Tracks": [
+                {
+                    "Type": "Float",
+                    "Property": "UPointLightComponent.Intensity",
+                    "Sections": [
+                        {
+                            "Start": 0.0,
+                            "End": 4.0,
+                            "Channels": {
+                                "Value": [
+                                    { "Time": 0.0, "Value": 0.5, "Interp": "Cubic" },
+                                    { "Time": 2.0, "Value": 6.0, "Interp": "Cubic" },
+                                    { "Time": 4.0, "Value": 0.5, "Interp": "Cubic" }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "Name": "Ghost",
+            "Tag": "Ghost",
+            "Template": {
+                "Class": "AStaticMeshActor",
+                "Properties": {},
+                "Components": [
+                    {
+                        "Name": "DefaultSceneRoot",
+                        "Class": "USceneComponent",
+                        "Parent": "",
+                        "Properties": {
+                            "Transform": {
+                                "Location": { "X": 0.0, "Y": -3.0, "Z": 1.0 },
+                                "Rotation": { "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0 },
+                                "Scale": { "X": 0.6, "Y": 0.6, "Z": 0.6 }
+                            }
+                        }
+                    },
+                    {
+                        "Name": "UStaticMeshComponent",
+                        "Class": "UStaticMeshComponent",
+                        "Parent": "DefaultSceneRoot",
+                        "OverrideMaterials": [],
+                        "Properties": { "StaticMesh": "Sphere" }
+                    }
+                ]
+            },
+            "Tracks": [
+                {
+                    "Type": "Transform",
+                    "Property": "",
+                    "Sections": [
+                        {
+                            "Start": 0.0,
+                            "End": 4.0,
+                            "Channels": {
+                                "Location.Y": [
+                                    { "Time": 0.0, "Value": -3.0, "Interp": "Linear" },
+                                    { "Time": 4.0, "Value": 3.0, "Interp": "Linear" }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

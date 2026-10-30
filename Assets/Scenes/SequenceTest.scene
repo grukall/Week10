@@ -1,0 +1,108 @@
+{
+    "Version": 4,
+    "World": {
+        "PersistentLevel": {
+            "Actors": [
+                {
+                    "Class": "AStaticMeshActor",
+                    "Properties": {},
+                    "Components": [
+                        {
+                            "Name": "DefaultSceneRoot",
+                            "Class": "USceneComponent",
+                            "Parent": "",
+                            "Properties": {
+                                "Transform": {
+                                    "Location": { "X": 0.0, "Y": 0.0, "Z": -0.6 },
+                                    "Rotation": { "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0 },
+                                    "Scale": { "X": 10.0, "Y": 10.0, "Z": 0.2 }
+                                }
+                            }
+                        },
+                        {
+                            "Name": "UStaticMeshComponent",
+                            "Class": "UStaticMeshComponent",
+                            "Parent": "DefaultSceneRoot",
+                            "OverrideMaterials": [],
+                            "Properties": { "StaticMesh": "Cube" }
+                        }
+                    ]
+                },
+                {
+                    "Class": "AStaticMeshActor",
+                    "Properties": { "BindingTag": "Hero" },
+                    "Components": [
+                        {
+                            "Name": "UStaticMeshComponent",
+                            "Class": "UStaticMeshComponent",
+                            "Parent": "DefaultSceneRoot",
+                            "OverrideMaterials": [],
+                            "Properties": { "StaticMesh": "Cube" }
+                        }
+                    ]
+                },
+                {
+                    "Class": "APointLightActor",
+                    "Properties": { "BindingTag": "Lamp" },
+                    "Components": [
+                        {
+                            "Name": "DefaultSceneRoot",
+                            "Class": "USceneComponent",
+                            "Parent": "",
+                            "Properties": {
+                                "Transform": {
+                                    "Location": { "X": 0.0, "Y": 0.0, "Z": 2.5 },
+                                    "Rotation": { "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0 },
+                                    "Scale": { "X": 1.0, "Y": 1.0, "Z": 1.0 }
+                                }
+                            }
+                        },
+                        {
+                            "Name": "UPointLightComponent",
+                            "Class": "UPointLightComponent",
+                            "Parent": "DefaultSceneRoot",
+                            "Properties": { "AttenuationRadius": 10.0, "Intensity": 0.5 }
+                        }
+                    ]
+                },
+                {
+                    "Class": "AAmbientLightActor",
+                    "Properties": {},
+                    "Components": []
+                },
+                {
+                    "Class": "ADirectionalLightActor",
+                    "Properties": {},
+                    "Components": [
+                        {
+                            "Name": "DefaultSceneRoot",
+                            "Class": "USceneComponent",
+                            "Parent": "",
+                            "Properties": {
+                                "Transform": {
+                                    "Location": { "X": 0.0, "Y": 0.0, "Z": 5.0 },
+                                    "Rotation": { "Pitch": -50.0, "Roll": 0.0, "Yaw": 45.0 },
+                                    "Scale": { "X": 1.0, "Y": 1.0, "Z": 1.0 }
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "Class": "ALevelSequenceActor",
+                    "Properties": {
+                        "SequencePath": "Assets/Sequences/SequenceTest.sequence",
+                        "bAutoPlay": true,
+                        "bRestoreState": true,
+                        "LoopCount": 1,
+                        "PlayRate": 1.0,
+                        "StartTime": 0.0
+                    },
+                    "Components": []
+                }
+            ],
+            "Properties": {}
+        },
+        "Properties": {}
+    }
+}

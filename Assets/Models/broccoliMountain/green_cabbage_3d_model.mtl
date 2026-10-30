@@ -1,0 +1,11 @@
+newmtl tripo_material_9d8cb9b5_85fe_43a9_9bb1_1198e755e945
+Kd 1.000000000 1.000000000 1.000000000
+d 1.000000000
+illum 2
+map_Kd green_cabbage_3d_model_basecolor.jpg
+Pr 1.000000000
+Pm 1.000000000
+map_Pr green_cabbage_3d_model_roughness.png
+map_Pm green_cabbage_3d_model_metallic.png
+norm green_cabbage_3d_model_normal.png
+

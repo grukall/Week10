@@ -1,0 +1,8 @@
+{
+  "Keys": [
+    { "Time": 0.0,  "Value": 1.0, "Interp": 2 },
+    { "Time": 0.05, "Value": 0.6, "Interp": 2 },
+    { "Time": 0.15, "Value": 1.2, "Interp": 2 },
+    { "Time": 0.3,  "Value": 1.0, "Interp": 2 }
+  ]
+}
