@@ -12,6 +12,10 @@ namespace
 	}
 }
 
+FDeferredDecalSceneProxy::FDeferredDecalSceneProxy(UDecalComponent* DecalComponent) : Component(DecalComponent)
+{
+}
+
 void FDeferredDecalSceneProxy::UpdateFromComponent()
 {
 	FMatrix DecalSizeMat = FMatrix::Identity;

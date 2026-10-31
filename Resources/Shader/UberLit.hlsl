@@ -609,6 +609,9 @@ Texture2D NormalTexture : register(t1);
 
 SamplerState AlbedoSampler : register(s0);
 
+// 조명 전에 데칼 색을 섞는다. RGB = 데칼 색, A = 덮인 정도. Lit 불투명만 읽는다.
+Texture2D DBufferA : register(t16);
+
 float3 DiffuseTerm(float3 Il, float3 N, float3 L)
 {
     return Il * max(dot(N, L), 0.0f);
@@ -865,6 +868,14 @@ float4 mainPS(FPSInput Input) : SV_TARGET
     float4 SurfaceColor = TextureColor * BaseColor;
 
     float3 Albedo = SurfaceColor.rgb;
+#if VIEWMODE == VIEWMODE_LIT
+    // 반투명은 자기 뒤 표면에 찍힌 데칼을 섞으면 안 되므로 불투명만 읽는다.
+    if (bOpaque)
+    {
+        float4 Decal = DBufferA.Load(int3(Input.Position.xy, 0));
+        Albedo = lerp(Albedo, Decal.rgb, Decal.a);
+    }
+#endif
     float Alpha = bOpaque ? 1.0f : SurfaceColor.a;
 
     float3 Kd = Albedo;

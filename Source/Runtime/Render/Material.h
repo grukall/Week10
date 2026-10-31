@@ -35,11 +35,6 @@ struct FBillboardMaterialParams
 };
 static_assert(sizeof(FBillboardMaterialParams) == 16);
 
-struct FDecalMaterialParams
-{
-};
-static_assert(sizeof(FDecalMaterialParams) == 1);
-
 class UMaterial : public UMaterialInterface
 {
 	DECLARE_CLASS(UMaterial, UMaterialInterface)

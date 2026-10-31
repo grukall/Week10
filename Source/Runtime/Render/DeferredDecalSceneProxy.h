@@ -13,10 +13,7 @@ class UMaterial;
 struct FDeferredDecalSceneProxy
 {
 public:
-    explicit FDeferredDecalSceneProxy(UDecalComponent* DecalComponent) : Component(DecalComponent)
-    {
-
-    }
+    explicit FDeferredDecalSceneProxy(UDecalComponent* DecalComponent);
     void UpdateFromComponent();       // 컴포넌트 → 스냅샷 복사
     UDecalComponent* GetComponent() { return Component; }
     FScene* GetScene() { return Scene; }

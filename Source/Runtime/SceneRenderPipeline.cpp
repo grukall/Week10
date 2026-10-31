@@ -68,7 +68,7 @@ bool FSceneRenderPipeline::RenderScene(FViewport& Viewport, UWorld& ViewWorld, c
     Renderer->SetLighting(Lighting, Data.PointLights, Data.SpotLights);
 
     // 불투명·반투명 Pass (Linear 씬 컬러)
-    RenderOpaquePass(Viewport, SceneRenderingInfo, View, Lighting.Directional, Settings);
+    RenderOpaquePass(Viewport, SceneRenderingInfo, View, Lighting.Directional, Settings, ViewWorld.GetScene().Decals);
     // Viewport 자원을 GPU 바인딩이 붙잡지 않게 조명 패스 소비 후 해제한다.
     Renderer->BindDirectionalShadow(Viewport, SceneRenderer.GetFrameNumber(), false);
 
@@ -124,7 +124,8 @@ void FSceneRenderPipeline::RenderPostProcess(FViewport& Viewport, UWorld& ViewWo
         RenderFXAAPass(Viewport.GetFxaaTarget(), ViewRenderingInfo);
 }
 
-void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderingInfo& ViewRenderingInfo, const FSceneView& View, const FDirectionalLightInfo& DirectionalLight, const FSceneRenderSettings& Settings)
+void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderingInfo& ViewRenderingInfo, const FSceneView& View, const FDirectionalLightInfo& DirectionalLight, const FSceneRenderSettings& Settings,
+    const TArray<FDeferredDecalSceneProxy*>& Decals)
 {
     const FMatrix& ViewProjection = View.ViewProjection;
     const FVector ViewCameraLocation = View.GetCameraLocation();
@@ -148,6 +149,13 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
         Renderer->RenderDepthPrepass(ViewProjection);
         RenderCommand::EndRenderPass(DepthInfo);
         Renderer->CullLights(Viewport.GetLightCullingResources(), View.ProjectionMatrix, DepthInfo.DepthStencil.Texture, Viewport.GetSceneRenderData().CullingLights, DepthInfo.ViewportSetting.Width, DepthInfo.ViewportSetting.Height, bVisualizeLightCount);
+
+        // 데칼은 조명 전에 DBuffer에 쌓고, UberLit이 Albedo에 섞은 뒤 조명을 계산한다(언리얼 DBuffer 데칼).
+        // Prepass 깊이가 있어야 하므로 Lit에서만 한다. 꺼져 있어도 지난 프레임 값이 남지 않게 빈 목록으로 지운다.
+        static const TArray<FDeferredDecalSceneProxy*> NoDecals{};
+        FTexture2D* DBuffer = Viewport.GetDBufferTarget();
+        Renderer->RenderDecalsToDBuffer(Settings.ShowFlags.Decal ? Decals : NoDecals, View, ViewRenderingInfo, DBuffer, Settings.DecalMethod);
+        RenderCommand::BindShaderResource(DBufferSRVSlot, DBuffer, EShaderBindFlagBits::Pixel);
     }
 
     // 배경은 화면에서 sRGB 0.3 회색으로 보여야 한다. Linear 작업 흐름에서는 인코딩될 것이므로 디코딩해 지운다.
@@ -178,12 +186,15 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
         // 불투명을 먼저 그리고 반투명을 먼 것부터 그린다.
         // Grid는 깊이를 쓰지 않는 반투명 위에도 겹칠 수 있지만, 언리얼의 에디터 프리미티브처럼 Overlay Pass에서 마지막에 합성한다.
         Renderer->RenderOpaque(ViewProjection, bDepthPrepass);
+        Renderer->RenderDecal(ViewProjection);
         Renderer->RenderTranslucent(ViewProjection);
         // 장면 Wireframe이 Grid·Gizmo·UI로 전파되지 않도록 복원한다.
         RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
     }
 
     RenderCommand::EndRenderPass(PassInfo);
+    // 다음 프레임에 DBuffer를 RTV로 쓸 때 SRV로 남아 있으면 D3D가 강제로 떼므로 비운다
+    RenderCommand::UnbindShaderResource(DBufferSRVSlot, EShaderBindFlagBits::Pixel);
     RenderCommand::UnbindShaderResources(8, 4, EShaderBindFlagBits::Pixel);
     RenderCommand::UnbindShaderResources(8, 2, EShaderBindFlagBits::Vertex);
 }

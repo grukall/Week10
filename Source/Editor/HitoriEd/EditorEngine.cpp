@@ -916,6 +916,8 @@ FSceneRenderSettings UEditorEngine::MakeSceneRenderSettings() const
     Out.bDrawPrimitives = Settings.bDrawPrimitives;
     Out.bVisualizeTileLightCount = Settings.bVisualizeTileLightCount;
     Out.ShowFlags.Fog = Settings.bExponentialHeightFog;
+    Out.ShowFlags.Decal = Settings.bDecal;
+    Out.DecalMethod = Settings.bDecalMeshMethod ? EDecalMethod::Mesh : EDecalMethod::Depth;
     Out.ShowFlags.AntiAliasing = Settings.bEnableFXAA;
     Out.ShowFlags.Tonemapper = Settings.bToneMapping;
 	Out.ShowFlags.GammaCorrection = Settings.bGammaCorrection;

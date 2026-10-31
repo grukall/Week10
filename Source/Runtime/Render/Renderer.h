@@ -11,7 +11,10 @@
 #include "TileLightCulling.h"
 #include "LocalLight.h"
 #include "ShadowResources.h"
+#include "Math/Color.h"
+#include "ShowFlags.h"
 
+struct FDeferredDecalSceneProxy;
 struct FShadowFrameData;
 struct FShadowRequestPerLight;
 struct FShadowDepthPassInfo;
@@ -32,6 +35,8 @@ static_assert(offsetof(FShadowDepthPassConstants, LightPosition) == 64);
 static_assert(offsetof(FShadowDepthPassConstants, InvRadius) == 76);
 
 constexpr uint32 ObjectSlotBytes = 256;
+// UberLit이 데칼 결과를 읽는 슬롯. 그림자 SRV(t12~t15) 다음 칸이다.
+constexpr uint32 DBufferSRVSlot = 16;
 
 struct FPerObjectConstants
 {
@@ -51,6 +56,20 @@ struct FViewConstants
 	float Padding = 0.0f;
 };
 static_assert(sizeof(FViewConstants) == 80, "HLSL b0 레이아웃(matrix + float3 + float)과 같아야 한다");
+
+struct FDecalConstants
+{
+	FMatrix ViewProjection;
+	FMatrix InvViewProjection;
+	FMatrix DecalToWorld;
+	FMatrix WorldToDecal;
+	FLinearColor DecalColor;
+	float ViewportWidth = 0.0f;
+	float ViewportHeight = 0.0f;
+	float FadeAlpha = 1.0f;
+	float Padding = 0.0f;
+};
+static_assert(sizeof(FDecalConstants) == 288, "HLSL b6 FDecalConstants(DecalCommon.hlsli)와 같아야 한다");
 
 inline FMatrix MakeNormalMatrix(const FMatrix& World) { return World.Inverse().GetTransposed(); }
 
@@ -112,8 +131,15 @@ public:
 	// SceneView의 ViewProjection을 직접 받아 View별 렌더 큐를 그린다.
 	void RenderAll(FRenderQueue& InQueue, const FMatrix& ViewProjection, const FVector& CameraPosition);
 
+	// Lit 전용. Depth Prepass 뒤, 불투명 셰이딩 전에 호출해 데칼 색을 DBuffer에 쌓는다.
+	// UberLit이 DBuffer를 읽어 Albedo에 섞은 뒤 조명을 계산하므로 데칼도 빛과 그림자를 받는다.
+	// 데칼이 없어도 DBuffer를 지우므로 매 Lit View마다 호출한다.
+	void RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View,
+		const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, EDecalMethod Method);
+
 	// 큐를 정렬해 불투명 패킷만 그린다. 반투명은 RenderTranslucent 호출 전까지 보관한다.
 	void RenderOpaque(const FMatrix& ViewProjection, bool bAfterPrepass = false);
+	void RenderDecal(const FMatrix& ViewProjection);
 	void RenderDepthPrepass(const FMatrix& ViewProjection);
 
 	// Pass 1: 한 면을 Clear하고 그린다.
@@ -158,10 +184,13 @@ private:
 	TUniquePtr<FConstantBuffer> ShadowDepthPassCB;
 	TUniquePtr<FConstantBuffer> LightingCB;
 	TUniquePtr<FConstantBuffer> TileShadingCB;
+	TUniquePtr<FConstantBuffer> DecalCB;
 	FShaderProgram* DepthShader = nullptr;
     FShaderProgram* ShadowNearClampShader = nullptr;
 	FShaderProgram* ShadowDistanceShader = nullptr;
 	FShaderProgram* ShadowTileClearShader = nullptr;
+	FShaderProgram* DecalMeshShader = nullptr;
+	FShaderProgram* DeferredDecalShader = nullptr;
 	ComPtr<ID3D11DepthStencilState> ShadowTileClearDepthState;
 
 	// 모든 패킷의 World 행렬을 256바이트 칸에 한 번에 올린 버퍼. D3D11.1 오프셋 바인딩을 못 쓰면 PerObjectCB로 돌아간다.
@@ -191,6 +220,10 @@ private:
 	std::vector<const FStaticDrawGroup*> StaticGroups;
 	void BindMaterial(UMaterial* material, ESceneMeshPass Pass = ESceneMeshPass::Color);
 	void UpdateMaterialParams(const FRenderPacket& RenderPacket);
+	void DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants, FTexture2D* SceneDepth);
+	void DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants);
+	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 그릴 수 없는 데칼이면 false
+	bool BindDecal(const FDeferredDecalSceneProxy& Decal, FDecalConstants& Constants, const FMatrix& BoxToWorld);
 	void UpdatePerObjectConstants(const FRenderPacket& RenderPacket, const FMatrix& ViewProjection);
 	void EnsurePerObjectSlotCapacity(uint32 SlotCount);
 	void UploadPerObjectConstants();

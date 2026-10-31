@@ -11,6 +11,9 @@
 #include "Core/Stats/LightweightStats.h"
 
 #include "Engine/PrimitiveSceneProxy.h"
+#include "DeferredDecalSceneProxy.h"
+#include "Material.h"
+#include "Asset/AssetManager.h"
 
 #include "RenderCommand.h"
 #include "RenderResourceManager.h"
@@ -41,6 +44,10 @@ namespace
     constexpr uint32 ShadowSamplerSlot = 1;
     constexpr uint32 DirectionalShadowCBSlot = 5;
     constexpr uint32 ShadowComparisonSamplerSlot = 2;
+	constexpr uint32 DecalCBSlot = 6;
+	// t0은 머티리얼 텍스처 규칙대로 데칼 텍스처, t1은 Depth 방식이 읽는 씬 깊이다.
+	constexpr uint32 DecalTextureSlot = 0;
+	constexpr uint32 DecalSceneDepthSlot = 1;
 
     struct FTileLightShadingConstants
     {
@@ -110,6 +117,7 @@ bool FRenderer::Init()
 	LightingCB = RenderCommand::CreateConstantBuffer(sizeof(FLightingConstants));
 	FLightingConstants LightingConstant{};
 	RenderCommand::UpdateBufferData(LightingCB.get(), &LightingConstant);
+	DecalCB = RenderCommand::CreateConstantBuffer(sizeof(FDecalConstants));
 
     TileShadingCB = RenderCommand::CreateConstantBuffer(sizeof(FTileLightShadingConstants));
     const FTileLightShadingConstants TileDefaults{};
@@ -141,6 +149,15 @@ bool FRenderer::Init()
     ShadowTileClearShader = FRenderResourceManager::FindShaderProgram("Resources/Shader/ShadowAtlasClear.hlsl");
     if (!ShadowTileClearShader || !ShadowTileClearShader->VertexShader || !ShadowTileClearShader->PixelShader ||
         !ShadowTileClearShader->VertexShader->IsValid() || !ShadowTileClearShader->PixelShader->IsValid()) return false;
+
+	DecalMeshShader = FRenderResourceManager::FindShaderProgram("Resources/Shader/DecalMesh.hlsl");
+	if (!DecalMeshShader || !DecalMeshShader->VertexShader || !DecalMeshShader->PixelShader ||
+		!DecalMeshShader->VertexShader->IsValid() || !DecalMeshShader->PixelShader->IsValid()) return false;
+
+	DeferredDecalShader = FRenderResourceManager::FindShaderProgram("Resources/Shader/DeferredDecal.hlsl");
+	if (!DeferredDecalShader || !DeferredDecalShader->VertexShader || !DeferredDecalShader->PixelShader ||
+		!DeferredDecalShader->VertexShader->IsValid() || !DeferredDecalShader->PixelShader->IsValid()) return false;
+
     D3D11_DEPTH_STENCIL_DESC ClearDepthDesc{};
     ClearDepthDesc.DepthEnable = TRUE;
     ClearDepthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
@@ -226,11 +243,164 @@ void FRenderer::RenderAll(FRenderQueue& InQueue, const FMatrix& ViewProjection, 
 	RenderTranslucent(ViewProjection);
 }
 
+void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, EDecalMethod Method)
+{
+	if (!DBuffer)
+		return;
+
+	FTexture2D* SceneDepth = SceneInfo.DepthStencil.Texture;
+
+	// A가 0이면 UberLit이 원래 Albedo를 그대로 쓴다. 지우지 않으면 지난 프레임 데칼이 남는다.
+	FRenderingInfo PassInfo;
+	PassInfo.ViewportSetting = SceneInfo.ViewportSetting;
+	FRenderingDesc DBufferDesc{};
+	DBufferDesc.Texture = DBuffer;
+	DBufferDesc.ClearValue.ColorClearValue = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+	PassInfo.ColorRenderTargets.Add(DBufferDesc);
+	// Depth 방식은 깊이를 SRV로 읽으므로 DSV로 꽂으면 안 된다. Mesh 방식은 Prepass 깊이로 LESS_EQUAL 테스트만 한다.
+	if (Method == EDecalMethod::Mesh)
+	{
+		PassInfo.DepthStencil.Texture = SceneDepth;
+		PassInfo.DepthStencil.LoadOp = ERenderTargetLoadOp::Load;
+	}
+	RenderCommand::BeginRenderPass(PassInfo);
+
+	if (Decals.Num() > 0)
+	{
+		FDecalConstants Constants;
+		Constants.ViewProjection = View.ViewProjection;
+		Constants.InvViewProjection = View.ViewProjection.Inverse();
+		Constants.ViewportWidth = static_cast<float>(SceneInfo.ViewportSetting.Width);
+		Constants.ViewportHeight = static_cast<float>(SceneInfo.ViewportSetting.Height);
+
+		// 데칼이 겹치면 A가 Src + Dst·(1-SrcA)로 쌓여 "얼마나 덮였나"가 된다.
+		RenderCommand::SetBlendState(EBlendState::AlphaBlend);
+		RenderCommand::SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		RenderCommand::BindConstantBuffer(DecalCBSlot, DecalCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
+
+		if (Method == EDecalMethod::Depth)
+			DrawDecalBoxes(Decals, Constants, SceneDepth);
+		else
+			DrawDecalReceivers(Decals, Constants);
+
+		RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
+	}
+
+	RenderCommand::EndRenderPass(PassInfo);
+	// 다음 패스가 깊이를 DSV로 다시 꽂을 때 SRV로 남아 있으면 D3D가 강제로 떼므로 먼저 비운다
+	RenderCommand::UnbindShaderResource(DecalSceneDepthSlot, EShaderBindFlagBits::Pixel);
+}
+
+bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, FDecalConstants& Constants, const FMatrix& BoxToWorld)
+{
+	UMaterial* Material = Decal.Material;
+	if (!Decal.bVisible || !Material || Material->Textures.Num() == 0 || !Material->Textures[0])
+		return false;
+
+	Constants.DecalToWorld = BoxToWorld;
+	Constants.WorldToDecal = Decal.WorldToDecal;
+	Constants.DecalColor = ColorWorkflow::ToShaderColor(Decal.DecalColor);
+	Constants.FadeAlpha = Decal.FadeAlpha;
+	RenderCommand::UpdateBufferData(DecalCB.get(), &Constants);
+
+	RenderCommand::BindShaderResource(DecalTextureSlot, Material->Textures[0], EShaderBindFlagBits::Pixel);
+	RenderCommand::BindSamplerState(0, Material->SamplerState, EShaderBindFlagBits::Pixel);
+	return true;
+}
+
+// 데칼마다 투영 박스를 그린다. 박스가 덮는 픽셀마다 깊이로 월드 위치를 복원하고, 박스 밖이면 셰이더가 버린다.
+void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants, FTexture2D* SceneDepth)
+{
+	UStaticMesh* BoxMesh = UAssetManager::GetAssetByPath<UStaticMesh>("Cube");
+	if (!BoxMesh || !SceneDepth)
+		return;
+
+	RenderCommand::BindShaderProgram(DeferredDecalShader);
+	// 카메라가 박스 안에 들어가도 사라지지 않도록 뒷면만 그린다. 깊이는 SRV로 읽고 있어 테스트하지 않는다.
+	RenderCommand::SetRasterizerState(ERasterizerState::SolidFront);
+	RenderCommand::SetDepthStencilState(EDepthStencilState::Disabled);
+	RenderCommand::BindShaderResource(DecalSceneDepthSlot, SceneDepth, EShaderBindFlagBits::Pixel);
+	RenderCommand::BindMesh(BoxMesh, 0);
+	const uint32 BoxIndexCount = BoxMesh->GetIndexBuffer(0)->GetIndexCount();
+
+	// Cube 에셋은 ±0.5라 두 배로 키워 데칼 로컬 ±1 박스에 맞춘다
+	const FMatrix UnitBoxScale = FMatrix::Identity.ApplyScale(FVector(2.0f, 2.0f, 2.0f));
+	for (const FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		if (!Decal || !BindDecal(*Decal, Constants, UnitBoxScale * Decal->DecalToWorld))
+			continue;
+		RenderCommand::DrawIndexed(BoxIndexCount);
+	}
+
+	LastMesh = nullptr;
+}
+
+// 데칼마다 Prepass에 깊이를 쓴 불투명 메시를 다시 그린다. 보간된 월드 위치가 박스 밖이면 셰이더가 버린다.
+void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants)
+{
+	RenderCommand::BindShaderProgram(DecalMeshShader);
+	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
+	RenderCommand::SetDepthStencilState(EDepthStencilState::ReadOnlyLessEqual);
+	RenderCommand::BindConstantBuffer(0, ViewCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
+
+	auto BindObject = [this](uint32 Slot, const FMatrix& World, const FMatrix& NormalMatrix)
+	{
+		if (bUsePerObjectSlots && Slot != InvalidObjectSlot)
+		{
+			RenderCommand::BindConstantBufferRange(2, PerObjectSlotCB.get(), Slot * PerObjectSlotConstants, PerObjectSlotConstants, EShaderBindFlagBits::Vertex);
+		}
+		else
+		{
+			RenderCommand::BindConstantBuffer(2, PerObjectCB.get(), EShaderBindFlagBits::Vertex);
+			UpdatePerObjectConstants(World, NormalMatrix);
+		}
+	};
+
+	// TODO: 지금은 데칼마다 받는 메시 전부를 그린다. BVH(Broad) + OBB-AABB SAT(Narrow)로 겹치는 메시만 고르기
+	for (const FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		if (!Decal || !BindDecal(*Decal, Constants, Decal->DecalToWorld))
+			continue;
+
+		for (const FStaticDrawGroup* Group : StaticGroups)
+		{
+			if (!UsesDepthPrepass(Group->Material)) continue;
+			RenderCommand::BindMesh(Group->Mesh, Group->LODIndex);
+			for (const FStaticDrawItem& Item : Group->Items)
+			{
+				BindObject(Item.Slot, Item.Proxy->GetLocalToWorld(), Item.Proxy->GetNormalMatrix());
+				RenderCommand::DrawIndexed(Item.IndexCount, Item.StartIndex);
+			}
+		}
+
+		for (uint32 k = 0; k < FirstTranslucentIndex; ++k)
+		{
+			const FRenderPacket& Packet = RenderPackets[SortEntries[k].PacketIndex];
+			if (!UsesDepthPrepass(Packet.Material)) continue;
+			RenderCommand::BindMesh(Packet.Mesh, Packet.LODIndex);
+			BindObject(Packet.Slot, GetPacketWorld(Packet), GetPacketNormalMatrix(Packet));
+			RenderCommand::DrawIndexed(Packet.IndexCount ? Packet.IndexCount : Packet.Mesh->GetIndexBuffer(Packet.LODIndex)->GetIndexCount(), Packet.StartIndex);
+		}
+	}
+
+	// 뒤따르는 불투명 패스가 처음부터 다시 바인딩하도록 기록을 비운다.
+	LastMesh = nullptr;
+	LastMaterial = nullptr;
+}
+
 void FRenderer::RenderOpaque(const FMatrix& ViewProjection, bool bAfterPrepass)
 {
     const ESceneMeshPass Pass = bAfterPrepass ? ESceneMeshPass::OpaqueAfterPrepass : ESceneMeshPass::Color;
     DrawStaticGroups(Pass);
     DrawPackets(0, FirstTranslucentIndex, ViewProjection, Pass);
+}
+
+void FRenderer::RenderDecal(const FMatrix& ViewProjection)
+{
+	//	Scene.Decals를 돌면서 데칼마다 BVH로 겹치는 프리미티브를 고르고, OBB로 한 번 더 걸러요.
+	//	데칼별 상수 버퍼(WorldToDecal, Color, FadeAlpha)를 업데이트해요.
+	//	상태를 세팅해요 : AlphaBlend, ReadOnlyLessEqual, SolidBack, Clamp 샘플러.
+	//	받는 메시를 데칼 셰이더로 다시 그려요.메시당 월드 행렬은 기존 PerObject CB(슬롯 2)에 넣어요.
 }
 
 void FRenderer::RenderDepthPrepass(const FMatrix& ViewProjection)

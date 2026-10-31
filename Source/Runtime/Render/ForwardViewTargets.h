@@ -7,6 +7,7 @@
 struct FForwardViewTargets
 {
 	TUniquePtr<FTexture2D> SceneColorTarget;
+	TUniquePtr<FTexture2D> DBufferTarget;
 	TUniquePtr<FTexture2D> ColorTarget;
 	TUniquePtr<FTexture2D> DepthTarget;
 	TUniquePtr<FTexture2D> FxaaTarget;

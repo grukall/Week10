@@ -361,12 +361,13 @@ void UAssetManager::CreateBillboardMaterial()
 void UAssetManager::CreateDecalMaterial()
 {
 	UMaterial* DecalMaterial = NewObject<UMaterial>();
-	DecalMaterial->Shader = FRenderResourceManager::GetShaderProgram("Resources/Shader/Decal.hlsl");
-	DecalMaterial->Textures.Add(LoadTexture(ResourcePaths::DefaultParticleTexture));
+	DecalMaterial->Shader = FRenderResourceManager::GetShaderProgram("Resources/Shader/DecalMesh.hlsl");
+	DecalMaterial->Textures.Add(LoadTexture(ResourcePaths::DefaultDecalTexture));
 	DecalMaterial->BlendState = EBlendState::AlphaBlend;
 	DecalMaterial->DepthStencilState = EDepthStencilState::ReadOnlyLessEqual;
+	DecalMaterial->SamplerState = ESamplerState::LinearClamp;
+	// 데칼마다 바뀌는 값(행렬·색·Fade)은 렌더러의 b6 상수 버퍼로 올리므로 머티리얼 파라미터 버퍼가 없다.
 	DecalMaterial->ParamLayout = EMaterialParamLayout::Decal;
-	DecalMaterial->ParamBuffer = RenderCommand::CreateConstantBuffer(sizeof(FDecalMaterialParams));
 	RegisterAsset("DecalMaterial", DecalMaterial);
 }
 

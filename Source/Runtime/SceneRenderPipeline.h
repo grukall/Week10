@@ -16,13 +16,15 @@ struct FSceneView;
 class FRenderer;
 class FSceneRenderer;
 class FHUD;
+struct FDeferredDecalSceneProxy;
 
 // 씬 렌더에 필요한 설정. Editor는 SettingsPanel 값을 채워 넘기고 Game은 기본값을 쓴다.
 struct FSceneRenderSettings
 {
 	bool bDrawPrimitives = true;
 	bool bVisualizeTileLightCount = false;
-	FEngineShowFlags ShowFlags;		// Fog, FXAA, ToneMapping, GammaCorrection, Vignette
+	FEngineShowFlags ShowFlags;		// Fog, FXAA, ToneMapping, GammaCorrection, Vignette, Decal
+	EDecalMethod DecalMethod = EDecalMethod::Depth;
 	float ExposureEV = 0.6f;
 	FScreenEffectDebug ScreenEffectDebug; 	// Todo: PCM 연결 후 삭제
 };
@@ -57,7 +59,8 @@ public:
 	//기존 EditorEngine에있는 Renderer들중에는 Editor에서도 써야하고 Game에서도 써야하는 Renderer들이있음
 	//지금까진 EditorEngine에서 모든 Renderer가있어서 둘다 공통으로 진행되는 파이프라인을 FSceneRenderPipeline에 모아서 실행
 private:
-	void RenderOpaquePass(FViewport& Viewport, const FRenderingInfo& ViewRenderingInfo, const FSceneView& View, const FDirectionalLightInfo& DirectionalLight, const FSceneRenderSettings& Settings);
+	void RenderOpaquePass(FViewport& Viewport, const FRenderingInfo& ViewRenderingInfo, const FSceneView& View, const FDirectionalLightInfo& DirectionalLight, const FSceneRenderSettings& Settings,
+		const TArray<FDeferredDecalSceneProxy*>& Decals);
 	void RenderFogPass(UWorld& ViewWorld, const FRenderingInfo& ViewRenderingInfo, const FVector& ViewCameraLocation, const FMatrix& ViewProjection);
 	void RenderGammaEncodePass(const FRenderingInfo& SceneRenderingInfo, const FRenderingInfo& ViewRenderingInfo, const FGammaEncodeParams& Params);
 	void RenderFXAAPass(FTexture2D* FxaaTarget, const FRenderingInfo& ViewRenderingInfo);

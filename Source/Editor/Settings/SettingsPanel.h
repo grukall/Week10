@@ -22,6 +22,9 @@ struct FEditorSettings
 	bool bShowUUID = false;
 	bool bDrawGrid = true;
 	bool bExponentialHeightFog = true;
+	bool bDecal = true;
+	// 데칼을 받는 메시를 다시 그린다. 끄면 데칼 박스를 그리고 깊이로 위치를 복원한다
+	bool bDecalMeshMethod = false;
 	bool bVisualizeTileLightCount = false;
 
 	// Rendering
