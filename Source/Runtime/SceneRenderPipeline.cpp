@@ -136,6 +136,8 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
     const bool bVisualizeLightCount = Settings.bVisualizeTileLightCount;
     const bool bDrawPrimitives = Settings.bDrawPrimitives;
     const bool bDepthPrepass = bDrawPrimitives && ViewRenderMode.ViewMode == EViewMode::Lit;
+    static const TArray<FDeferredDecalSceneProxy*> NoDecals{};
+
     Renderer->SetViewMode(ViewRenderMode);
     if (bDrawPrimitives)
         Renderer->RenderQueueSorting(RenderQueue, ViewProjection, ViewCameraLocation);
@@ -152,7 +154,6 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
 
         // 데칼은 조명 전에 DBuffer에 쌓고, UberLit이 Albedo에 섞은 뒤 조명을 계산한다(언리얼 DBuffer 데칼).
         // Prepass 깊이가 있어야 하므로 Lit에서만 한다. 꺼져 있어도 지난 프레임 값이 남지 않게 빈 목록으로 지운다.
-        static const TArray<FDeferredDecalSceneProxy*> NoDecals{};
         FTexture2D* DBuffer = Viewport.GetDBufferTarget();
         Renderer->RenderDecalsToDBuffer(Settings.ShowFlags.Decal ? Decals : NoDecals, View, ViewRenderingInfo, DBuffer, Settings.DecalMethod);
         RenderCommand::BindShaderResource(DBufferSRVSlot, DBuffer, EShaderBindFlagBits::Pixel);
@@ -186,7 +187,9 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
         // 불투명을 먼저 그리고 반투명을 먼 것부터 그린다.
         // Grid는 깊이를 쓰지 않는 반투명 위에도 겹칠 수 있지만, 언리얼의 에디터 프리미티브처럼 Overlay Pass에서 마지막에 합성한다.
         Renderer->RenderOpaque(ViewProjection, bDepthPrepass);
-        Renderer->RenderDecal(ViewProjection);
+        // Lit은 DBuffer로 이미 섞었다. Unlit은 조명이 없어 불투명 위에 바로 덧그리며, 반투명보다 먼저 그려 반투명에는 찍히지 않게 한다.
+        if (ViewRenderMode.ViewMode == EViewMode::Unlit)
+            Renderer->RenderDecal(Settings.ShowFlags.Decal ? Decals : NoDecals, View, PassInfo, Settings.DecalMethod);
         Renderer->RenderTranslucent(ViewProjection);
         // 장면 Wireframe이 Grid·Gizmo·UI로 전파되지 않도록 복원한다.
         RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);

@@ -150,6 +150,17 @@ void FTexture2D::CreateViews(ID3D11Device* Device, const D3D11_TEXTURE2D_DESC& I
 		hr = Device->CreateDepthStencilView(Texture.Get(), bTypelessDepth ? &DsvDesc : nullptr, DSV.GetAddressOf());
 		if (FAILED(hr))
 			HTR_LOG(Error, "[Texture2D] CreateDepthStencilView failed (hr=0x{:08X})", (uint32)hr);
+
+
+		//SRV도 바인딩 가능한 읽기 전용 DSV 생성, SRV로도 쓰겠다는 Flag가 있어야 생성된다.
+		if (bTypelessDepth && (InDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE))
+		{
+			DsvDesc.Flags = D3D11_DSV_READ_ONLY_DEPTH;
+
+			hr = Device->CreateDepthStencilView(Texture.Get(), &DsvDesc, ReadOnlyDSV.GetAddressOf());
+			if (FAILED(hr))
+				HTR_LOG(Error, "[Texture2D] CreateDepthStencilView(ReadOnly) failed (hr=0x{:08X})", (uint32)hr);
+		}
 	}
 }
 

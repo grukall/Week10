@@ -139,7 +139,10 @@ public:
 
 	// 큐를 정렬해 불투명 패킷만 그린다. 반투명은 RenderTranslucent 호출 전까지 보관한다.
 	void RenderOpaque(const FMatrix& ViewProjection, bool bAfterPrepass = false);
-	void RenderDecal(const FMatrix& ViewProjection);
+
+	// Unlit 전용. 불투명과 반투명 사이에 호출해 데칼을 씬 컬러에 바로 덧그린다. 조명이 없어 DBuffer를 거친 결과와 같다.
+	// SceneInfo는 진행 중인 씬 패스이며, 깊이를 읽기 전용 DSV로 바꿔 그린 뒤 원래 바인딩으로 이어 준다.
+	void RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, EDecalMethod Method);
 	void RenderDepthPrepass(const FMatrix& ViewProjection);
 
 	// Pass 1: 한 면을 Clear하고 그린다.
@@ -220,6 +223,8 @@ private:
 	std::vector<const FStaticDrawGroup*> StaticGroups;
 	void BindMaterial(UMaterial* material, ESceneMeshPass Pass = ESceneMeshPass::Color);
 	void UpdateMaterialParams(const FRenderPacket& RenderPacket);
+	// 데칼 공통 상수를 채우고 방식에 맞게 그린다. 렌더 타깃과 읽기 전용 깊이는 호출자가 바인딩해 둔다.
+	void DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method);
 	void DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants, FTexture2D* SceneDepth);
 	void DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants);
 	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 그릴 수 없는 데칼이면 false
