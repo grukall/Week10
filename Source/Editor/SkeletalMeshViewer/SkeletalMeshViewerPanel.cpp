@@ -557,3 +557,41 @@ FVector FSkeletalMeshViewerPanel::GetBoneGlobalPosition(int32 BoneIndex) const
 
 	return FVector{ GlobalTranslationX, GlobalTranslationY, GlobalTranslationZ };
 }
+
+bool FSkeletalMeshViewerPanel::IsBoneValid(int32 BoneIndex) const
+{
+	return MockBones.IsValidIndex(BoneIndex) 
+		&& EditableLocalPose.IsValidIndex(BoneIndex) 
+		&& GlobalPose.IsValidIndex(BoneIndex);
+}
+
+int32 FSkeletalMeshViewerPanel::GetBoneParentIndex(int32 BoneIndex) const
+{
+	return MockBones.IsValidIndex(BoneIndex) 
+		? MockBones[BoneIndex].ParentIndex 
+		: -1;
+}
+
+FTransform FSkeletalMeshViewerPanel::GetBoneLocalTransform(int32 BoneIndex) const
+{
+	return EditableLocalPose.IsValidIndex(BoneIndex) 
+		? EditableLocalPose[BoneIndex] 
+		: FTransform::Identity;
+}
+
+FMatrix FSkeletalMeshViewerPanel::GetBoneGlobalMatrix(int32 BoneIndex) const
+{
+	return GlobalPose.IsValidIndex(BoneIndex) 
+		? GlobalPose[BoneIndex] 
+		: FMatrix::Identity;
+}
+
+void FSkeletalMeshViewerPanel::SetBoneLocalTransform(int32 BoneIndex, const FTransform& Transform)
+{
+	if (!EditableLocalPose.IsValidIndex(BoneIndex) || !IsValidEditableTransform(Transform))
+	{
+		return;
+	}
+	EditableLocalPose[BoneIndex] = Transform;
+	bPoseDirty = true;
+}

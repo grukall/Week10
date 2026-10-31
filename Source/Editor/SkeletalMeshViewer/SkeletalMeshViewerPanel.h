@@ -20,6 +20,7 @@ public:
 	void OnRender() override;
 	void DrawBoneDebug(FLineBatcher& LineBatcher) const;
 	FVector GetBoneGlobalPosition(int32 BoneIndex) const;
+	void RebuildGlobalPose();
 
 	const char* GetPanelName() const override { return "SkeletalMesh Viewer"; }
 
@@ -37,7 +38,12 @@ public:
 	void RouteSkeletalPreviewInput(FViewportInput Input);
 	void ReleaseSkeletalPreviewInput();
 
-	void RebuildGlobalPose();
+	int32 GetSelectedBoneIndex() const { return SelectedBoneIndex; }
+	bool IsBoneValid(int32 BoneIndex) const;
+	int32 GetBoneParentIndex(int32 BoneIndex) const;
+	FTransform GetBoneLocalTransform(int32 BoneIndex) const;
+	FMatrix GetBoneGlobalMatrix(int32 BoneIndex) const;
+	void SetBoneLocalTransform(int32 BoneIndex, const FTransform& Transform);
 
 private:
 	// 임시 Skeleton 데이터

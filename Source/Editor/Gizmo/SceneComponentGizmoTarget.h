@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Editor/Gizmo/TransformGizmoTarget.h"
+#include "TransformGizmoTarget.h"
 
 class USceneComponent;
 
