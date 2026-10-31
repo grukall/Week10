@@ -179,13 +179,6 @@ void RegisterLuaCameraAPI(sol::environment& Env, UObject* Owner)
 			return LuaReflection::MakeObject(sol::state_view(S), Actor);
 		});
 
-	// local Rotation = FindLookAtRotation(From, To) → From에서 To를 바라보는 회전
-	Env.set_function("FindLookAtRotation",
-		[](const FVector& From, const FVector& To)
-		{
-			return FindLookAtRotation(From, To);
-		});
-
 	// local Center, Radius = GetActorBounds(Actor) → 액터의 모든 컴포넌트를 감싸는 월드 AABB의 중심과 반지름
 	Env.set_function("GetActorBounds",
 		[](sol::object Target)
@@ -233,4 +226,5 @@ void RegisterLuaCameraAPI(sol::environment& Env, UObject* Owner)
 		{
 			return FRotator::FindLookAtRotation(From, To);
 		});
+
 }

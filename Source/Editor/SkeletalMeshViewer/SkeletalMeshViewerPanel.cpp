@@ -9,6 +9,7 @@
 #include "GameFramework/Actor/AmbientLightActor.h"
 #include "GameFramework/Actor/StaticMeshActor.h"
 #include "Math/Rotator.h"
+#include "Input/InputSystem.h"
 
 bool FSkeletalMeshViewerPanel::Init()
 {
@@ -28,6 +29,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 	if (!bOpen)
 	{
 		SetOpen(false);
+		SkeletalPreviewScreenRect = {};
 	}
 
 	if (!bVisible)
@@ -119,6 +121,9 @@ void FSkeletalMeshViewerPanel::OnRender()
 		}
 		if (SkeletalPreviewViewport && SkeletalPreviewViewport->GetColorTarget() && PreviewWidth > 0 && PreviewHeight > 0)
 		{
+			const ImVec2 PreviewMin = ImGui::GetCursorScreenPos();
+			SkeletalPreviewScreenRect = { PreviewMin.x, PreviewMin.y, PreviewSize.x, PreviewSize.y };
+
 			ImGui::Image((ImTextureID)SkeletalPreviewViewport->GetColorTarget()->GetSRV(), PreviewSize);
 		}
 		else
@@ -128,12 +133,6 @@ void FSkeletalMeshViewerPanel::OnRender()
 
 		ImGui::EndTable();
 	}
-
-	ImGui::Separator();
-	ImGui::TextDisabled("Display Options");
-	ImGui::SameLine();
-	ImGui::TextDisabled("Skeletal Mesh / Bones / Grid");
-
 	ImGui::End();
 }
 
@@ -315,4 +314,70 @@ void FSkeletalMeshViewerPanel::CreateDefaultSkeletalPreviewScene()
 
 	SkeletalPreviewAmbientLight = SkeletalPreviewWorld->SpawnActor<AAmbientLightActor>(FName("SkeletalPreviewAmbientLight"));
 	SkeletalPreviewAmbientLight->GetLightComponent()->SetIntensity(0.2f);
+	for (UActorComponent* Component : SkeletalPreviewAmbientLight->GetComponents())
+	{
+		if (UBillboardComponent* Billboard = Cast<UBillboardComponent>(Component)) Billboard->SetVisible(false);
+	}
+}
+
+bool FSkeletalMeshViewerPanel::IsSkeletalPreviewHovered() const
+{
+	POINT Mouse{};
+	if (!::GetCursorPos(&Mouse) || !SkeletalPreviewScreenRect.IsValid())
+	{
+		return false;
+	}
+
+	return Mouse.x >= SkeletalPreviewScreenRect.X 
+		&& Mouse.x < SkeletalPreviewScreenRect.X + SkeletalPreviewScreenRect.Width 
+		&& Mouse.y >= SkeletalPreviewScreenRect.Y 
+		&& Mouse.y < SkeletalPreviewScreenRect.Y + SkeletalPreviewScreenRect.Height;
+}
+
+bool FSkeletalMeshViewerPanel::IsSkeletalPreviewCaptured() const
+{
+	return bSkeletalPreviewCaptured;
+}
+
+void FSkeletalMeshViewerPanel::UpdateSkeletalPreviewInput()
+{
+	if (!FInputSystem::IsMouseDown(EMouseButton::Right))
+	{
+		bSkeletalPreviewCaptured = false;
+	}
+
+	if (!bSkeletalPreviewCaptured
+		&& IsSkeletalPreviewHovered()
+		&& FInputSystem::IsMouseDown(EMouseButton::Right))
+	{
+		bSkeletalPreviewCaptured = true;
+	}
+
+}
+
+void FSkeletalMeshViewerPanel::RouteSkeletalPreviewInput(FViewportInput Input)
+{
+	if (!SkeletalPreviewViewport)
+	{
+		return;
+	}
+	
+	POINT Mouse{};
+	::GetCursorPos(&Mouse);
+
+	Input.bCaptured = bSkeletalPreviewCaptured;
+	Input.bPointerOver = IsSkeletalPreviewHovered();
+	Input.MousePosition = 
+		{ static_cast<float>(Mouse.x) - SkeletalPreviewScreenRect.X, 
+		static_cast<float>(Mouse.y) - SkeletalPreviewScreenRect.Y };
+	SkeletalPreviewViewport->UpdateInput(Input);
+}
+
+void FSkeletalMeshViewerPanel::ReleaseSkeletalPreviewInput()
+{
+	bSkeletalPreviewCaptured = false;
+	if (SkeletalPreviewViewport)
+	{
+		SkeletalPreviewViewport->UpdateInput({});
+	}
 }

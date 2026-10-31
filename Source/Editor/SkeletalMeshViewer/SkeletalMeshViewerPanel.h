@@ -28,6 +28,12 @@ public:
 	FEditorViewportClient* GetSkeletalPreviewClient() const { return SkeletalPreviewClient; }
 	UWorld* GetSkeletalPreviWorld() const { return SkeletalPreviewWorld; }
 
+	bool IsSkeletalPreviewHovered() const;
+	bool IsSkeletalPreviewCaptured() const;
+	void UpdateSkeletalPreviewInput();
+	void RouteSkeletalPreviewInput(FViewportInput Input);
+	void ReleaseSkeletalPreviewInput();
+
 private:
 	// 임시 Skeleton 데이터
 	// 나중에 Bone 데이터랑 연결
@@ -56,4 +62,7 @@ private:
 	AStaticMeshActor* SkeletalPreviewFloor = nullptr;
 	ADirectionalLightActor* SkeletalPreviewDirectionalLight = nullptr;
 	AAmbientLightActor* SkeletalPreviewAmbientLight = nullptr;
+
+	FRect SkeletalPreviewScreenRect{};
+	bool bSkeletalPreviewCaptured = false;
 };

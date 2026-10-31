@@ -505,6 +505,21 @@ void UEditorEngine::UpdateEditorViewportState(const float DeltaTime)
         Input.bEnabled = bEditorInputEnabled;
         ViewportsPanel->RouteInput(ActiveIndex, Input);
     }
+
+	SkeletalMeshViewerPanel->UpdateSkeletalPreviewInput();
+	const bool bSkeletalPreviewWantInput = SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured()
+		|| SkeletalMeshViewerPanel->IsSkeletalPreviewHovered();
+	if (bSkeletalPreviewWantInput)
+	{
+		FViewportInput Input;
+		Input.DeltaTime = DeltaTime;
+		Input.WheelDelta = FInputSystem::GetWheelDelta();
+		Input.MoveSpeed = SettingsPanel->GetSettings().CameraSpeed;
+		Input.MouseSensitivity = SettingsPanel->GetSettings().MouseSensitivity;
+		Input.bEnabled = bEditorInputEnabled;
+		SkeletalMeshViewerPanel->RouteSkeletalPreviewInput(Input);
+	}
+
 	// 겹친 창은 Hover 선택에서 제외하고 우클릭 Capture를 우선한다.
 	if (ViewportsPanel->IsHovered() || ViewportsPanel->GetCapturedViewIndex() != FViewportsPanel::InvalidSlotIndex)
 		ViewportsPanel->SetEditorViewIndex(ViewportsPanel->GetActiveViewIndex());
