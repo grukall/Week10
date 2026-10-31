@@ -739,6 +739,9 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 	// 실행 중인 PIE View에는 Grid·Gizmo·Outline 같은 에디터 표시를 그리지 않는다.
 	// 별도 PIE 창은 편집 입력이 없으므로 일시정지 중에도 게임 화면만 보인다.
 	const bool bShowEditorOverlay = OverlayClient != nullptr;
+	const bool bShowSkeletalPreviewOverlay = SkeletalMeshViewerPanel 
+										&& SkeletalPreviewWorld 
+										&& &ViewWorld == SkeletalPreviewWorld;
 	FRenderingInfo PassInfo = ViewRenderingInfo;
 
 	for (FRenderingDesc& Color : PassInfo.ColorRenderTargets)
@@ -753,36 +756,46 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 
 	// 라인 배처는 매 프레임 한 번만 비우고 한 번만 그린다.
 	// 라이트 디버그 라인은 바운딩 박스 표시 여부와 무관하게 항상 그린다.
-	if (bShowEditorOverlay && !Settings.bDepthView)
+	if ((bShowEditorOverlay || bShowSkeletalPreviewOverlay) && !Settings.bDepthView)
 	{
 		LineBatcher->BeginFrame();
-		if (Settings.bDrawBoundingBox)
+
+		if (bShowEditorOverlay)
 		{
-			LineBatcher->BuildVertexBuffer(ViewWorld);
-		}
-		for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
-		{
-			if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
+			if (Settings.bDrawBoundingBox)
 			{
-				DirLight->DrawDebug(LineBatcher.get());
+				LineBatcher->BuildVertexBuffer(ViewWorld);
+			}
+			for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
+			{
+				if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
+				{
+					DirLight->DrawDebug(LineBatcher.get());
+				}
+			}
+			for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+			{
+				if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
+				{
+					SpotLight->DrawDebug(LineBatcher.get());
+				}
+			}
+			AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
+			for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
+			{
+				if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
+					continue;
+				if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
+					continue;
+				Shape->DrawDebug(LineBatcher.get());
 			}
 		}
-		for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+
+		if (bShowSkeletalPreviewOverlay)
 		{
-			if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
-			{
-				SpotLight->DrawDebug(LineBatcher.get());
-			}
+			SkeletalMeshViewerPanel->DrawBoneDebug(*LineBatcher);
 		}
-		AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
-		for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
-		{
-			if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
-				continue;
-			if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
-				continue;
-			Shape->DrawDebug(LineBatcher.get());
-		}
+
 		LineBatcher->OnRender(ViewProjection);
 	}
 

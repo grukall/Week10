@@ -10,6 +10,58 @@
 #include "GameFramework/Actor/StaticMeshActor.h"
 #include "Math/Rotator.h"
 #include "Input/InputSystem.h"
+#include "Render/LineBatcher.h"
+
+namespace
+{
+	bool IsFiniteVector(const FVector& Value)
+	{
+		return std::isfinite(Value.X)
+			&& std::isfinite(Value.Y)
+			&& std::isfinite(Value.Z);
+	}
+
+	bool IsValidEditableTransform(const FTransform& Transform)
+	{
+		return IsFiniteVector(Transform.Location)
+			&& std::isfinite(Transform.Rotation.Pitch)
+			&& std::isfinite(Transform.Rotation.Yaw)
+			&& std::isfinite(Transform.Rotation.Roll)
+			&& IsFiniteVector(Transform.Scale);
+	}
+
+	void AddWireCircle(FLineBatcher& LineBatcher, const FVector& Center, const FVector& AxisA, const FVector& AxisB, 
+		float Radius, int32 Segments, const FVector4& Color)
+	{
+		if (Radius <= 0.0f || Segments < 3)
+		{
+			return;
+		}
+
+		const float AngleStep = 2.0f * PI / static_cast<float>(Segments);
+
+		for (int32 SegmentIndex = 0; SegmentIndex < Segments; ++SegmentIndex)
+		{
+			const float CurrentAngle = AngleStep * static_cast<float>(SegmentIndex);
+			const float NextAngle = AngleStep * static_cast<float>(SegmentIndex + 1);
+
+			const FVector CurrentPoint = Center + (AxisA * std::cosf(CurrentAngle) + AxisB * std::sinf(CurrentAngle)) * Radius;
+			const FVector NextPoint = Center + (AxisA * std::cosf(NextAngle) + AxisB * std::sinf(NextAngle)) * Radius;
+
+			LineBatcher.AddLine(CurrentPoint, NextPoint, Color);
+		}
+	}
+
+	void AddWireSphere(FLineBatcher& LineBatcher, const FVector& Center, float Radius, int32 Segments, const FVector4& Color)
+	{
+		const FVector AxisX(1.0f, 0.0f, 0.0f);
+		const FVector AxisY(0.0f, 1.0f, 0.0f);
+		const FVector AxisZ(0.0f, 0.0f, 1.0f);
+		AddWireCircle(LineBatcher, Center, AxisX, AxisY, Radius, Segments, Color);
+		AddWireCircle(LineBatcher, Center, AxisX, AxisZ, Radius, Segments, Color);
+		AddWireCircle(LineBatcher, Center, AxisY, AxisZ, Radius, Segments, Color);
+	}
+}
 
 bool FSkeletalMeshViewerPanel::Init()
 {
@@ -19,6 +71,10 @@ bool FSkeletalMeshViewerPanel::Init()
 
 void FSkeletalMeshViewerPanel::Tick(float DeltaTime)
 {
+	if (bPoseDirty)
+	{
+		RebuildGlobalPose();
+	}
 }
 
 void FSkeletalMeshViewerPanel::OnRender()
@@ -85,7 +141,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 		else
 		{
 			const FMockBone& SelectedBone = MockBones[SelectedBoneIndex];
-			const FTransform& LocalTransform = EditableLocalPose[SelectedBoneIndex];
+			FTransform EditedTransform = EditableLocalPose[SelectedBoneIndex];
 
 			ImGui::Text("Name: %s", SelectedBone.Name.c_str());
 			ImGui::Text("Index: %d", SelectedBoneIndex);
@@ -99,12 +155,40 @@ void FSkeletalMeshViewerPanel::OnRender()
 			}
 
 			ImGui::Separator();
-			ImGui::TextUnformatted("Local Location");
-			ImGui::Text(
-				"X %.2f  Y %.2f  Z %.2f",
-				LocalTransform.Location.X,
-				LocalTransform.Location.Y,
-				LocalTransform.Location.Z);
+			ImGui::TextDisabled("Transform");
+			bool bTransformChanged = false;
+
+			bTransformChanged |= ImGui::DragFloat3("Location", &EditedTransform.Location.X, 0.1f);
+			bTransformChanged |= ImGui::DragFloat3("Rotation", &EditedTransform.Rotation.Pitch, 0.1f);
+			bTransformChanged |= ImGui::DragFloat3("Scale", &EditedTransform.Scale.X, 0.01f, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+			if (bTransformChanged && IsValidEditableTransform(EditedTransform))
+			{
+				EditableLocalPose[SelectedBoneIndex] = EditedTransform;
+				bPoseDirty = true;
+			}
+
+			if (ImGui::Button("Reset Bone"))
+			{
+				EditableLocalPose[SelectedBoneIndex] = SelectedBone.ReferenceLocalTransform;
+				bPoseDirty = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Reset All"))
+			{
+				for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+				{
+					EditableLocalPose[BoneIndex] = MockBones[BoneIndex].ReferenceLocalTransform;
+				}
+				bPoseDirty = true;
+			}
+			
+			if (GlobalPose.IsValidIndex(SelectedBoneIndex))
+			{
+				const FMatrix& GlobalMatrix = GlobalPose[SelectedBoneIndex];
+				ImGui::Separator();
+				ImGui::TextDisabled("Global Location");
+				ImGui::Text("X %.2f  Y %.2f  Z %.2f", GlobalMatrix[3][0], GlobalMatrix[3][1], GlobalMatrix[3][2]);
+			}
 		}
 
 		ImGui::TableNextColumn();
@@ -138,9 +222,12 @@ void FSkeletalMeshViewerPanel::OnRender()
 
 void FSkeletalMeshViewerPanel::CreateMockSkeleton()
 {
+	bPoseDirty = true;
 	MockBones.Reset();
 	EditableLocalPose.Reset();
+	GlobalPose.Reset();
 	SelectedBoneIndex = -1;
+
 	AddMockBone("Root", -1, FVector(0.0f, 0.0f, 0.0f));
 	AddMockBone("Pelvis", 0, FVector(0.0f, 0.0f, 1.0f));
 	AddMockBone("Spine", 1, FVector(0.0f, 0.0f, 0.7f));
@@ -380,4 +467,93 @@ void FSkeletalMeshViewerPanel::ReleaseSkeletalPreviewInput()
 	{
 		SkeletalPreviewViewport->UpdateInput({});
 	}
+}
+
+void FSkeletalMeshViewerPanel::RebuildGlobalPose()
+{
+	if (EditableLocalPose.Num() != MockBones.Num())
+	{
+		GlobalPose.Reset();
+		bPoseDirty = false;
+		return;
+	}
+
+	GlobalPose.SetNum(MockBones.Num());
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	{
+		const FMatrix LocalMatrix = EditableLocalPose[BoneIndex].GetLocalMatrix();
+		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		if (GlobalPose.IsValidIndex(ParentIndex) && ParentIndex < BoneIndex)
+		{
+			GlobalPose[BoneIndex] = LocalMatrix * GlobalPose[ParentIndex];
+		}
+		else
+		{
+			GlobalPose[BoneIndex] = LocalMatrix;
+		}
+	}
+	bPoseDirty = false;
+}
+
+
+void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
+{
+	if (GlobalPose.Num() != MockBones.Num())
+	{
+		return;
+	}
+
+	constexpr float BonePointRadius = 0.07f;
+	constexpr float SelectedBonePointRadius = 0.1f;
+	constexpr int32 SphereSegments = 16;
+
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	{
+		if (!GlobalPose.IsValidIndex(BoneIndex))
+		{
+			continue;
+		}
+
+		const FVector BonePosition = GetBoneGlobalPosition(BoneIndex);
+		if (!IsFiniteVector(BonePosition))
+		{
+			continue;
+		}
+
+		const bool bSelected = BoneIndex == SelectedBoneIndex;
+		const float Radius = bSelected ? SelectedBonePointRadius : BonePointRadius;
+		const FVector4 Color = bSelected
+			? FVector4(1.0f, 0.8f, 0.1f, 1.0f)
+			: FVector4(0.5f, 0.8f, 1.0f, 1.0f);
+		AddWireSphere(LineBatcher, BonePosition, Radius, SphereSegments, Color);
+
+		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		if (!GlobalPose.IsValidIndex(ParentIndex))
+		{
+			continue;
+		}
+
+		const FVector ParentPosition = GetBoneGlobalPosition(ParentIndex);
+		if (!IsFiniteVector(ParentPosition))
+		{
+			continue;
+		}
+		LineBatcher.AddLine(ParentPosition, BonePosition, Color);
+	}
+}
+
+
+FVector FSkeletalMeshViewerPanel::GetBoneGlobalPosition(int32 BoneIndex) const
+{
+	if (!GlobalPose.IsValidIndex(BoneIndex))
+	{
+		return FVector::ZeroVector;
+	}
+
+	const FMatrix& GlobalMatrix = GlobalPose[BoneIndex];
+	float GlobalTranslationX = GlobalMatrix[3][0];
+	float GlobalTranslationY = GlobalMatrix[3][1];
+	float GlobalTranslationZ = GlobalMatrix[3][2];
+
+	return FVector{ GlobalTranslationX, GlobalTranslationY, GlobalTranslationZ };
 }
