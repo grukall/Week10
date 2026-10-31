@@ -45,7 +45,7 @@ struct FEditorSettings
 	int32 GridSpacing = 1;
 
 	// Camera
-	float CameraSpeed = 1.0f;
+	float CameraSpeed = 4.0f;
 	float MouseSensitivity = 1.0f;
 
 	// 편집 Quad 분할과 최대화. 기존 ini 키는 저장/복원 함수에서 유지한다.

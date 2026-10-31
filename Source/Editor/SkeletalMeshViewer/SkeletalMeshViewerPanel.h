@@ -21,7 +21,6 @@ public:
 	void DrawBoneDebug(FLineBatcher& LineBatcher) const;
 	FVector GetBoneGlobalPosition(int32 BoneIndex) const;
 
-
 	const char* GetPanelName() const override { return "SkeletalMesh Viewer"; }
 
 	bool InitializeSkeletalPreview(UWorld* InSkeletalMeshWorld);
