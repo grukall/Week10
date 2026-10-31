@@ -49,6 +49,23 @@ namespace
 	constexpr uint32 DecalTextureSlot = 0;
 	constexpr uint32 DecalSceneDepthSlot = 1;
 
+	// UE CalculateDecalFadeAlpha. 데칼이 화면에서 FadeScreenSize 기준보다 작으면 0, 1.5배 이상이면 1이다.
+	// 같은 데칼도 카메라마다 크기가 달라 뷰마다 계산한다. 직교 뷰는 거리로 크기가 변하지 않아 하지 않는다.
+	float ComputeDecalScreenFade(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, float ViewportWidth)
+	{
+		if (Decal.FadeScreenSize <= 0.0f || View.IsOrthographic() || ViewportWidth <= 0.0f)
+			return 1.0f;
+
+		const float Distance = std::max((View.GetCameraLocation() - Decal.OBB.Center).Size(), 1.0e-4f);
+		const float Radius = std::max({ Decal.OBB.Extent.X, Decal.OBB.Extent.Y, Decal.OBB.Extent.Z });
+		const float CurrentScreenSize = Radius / Distance;
+
+		// FOV가 넓을수록, 해상도가 낮을수록 기준을 키운다. 600은 UE가 실험으로 정한 상수다.
+		const float FOVFactor = (2.0f / View.ProjectionMatrix[0][0]) / ViewportWidth * 600.0f;
+		const float FadeCoeff = Decal.FadeScreenSize * FOVFactor;
+		return FMath::Clamp((CurrentScreenSize - FadeCoeff) / (FadeCoeff * 0.5f), 0.0f, 1.0f);
+	}
+
     struct FTileLightShadingConstants
     {
         uint32 TileCountX = 0;
@@ -310,25 +327,30 @@ void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, cons
 	RenderCommand::BindConstantBuffer(DecalCBSlot, DecalCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
 
 	if (Method == EDecalMethod::Depth)
-		DrawDecalBoxes(Decals, Constants, SceneDepth);
+		DrawDecalBoxes(Decals, View, Constants, SceneDepth);
 	else
-		DrawDecalReceivers(Decals, Constants);
+		DrawDecalReceivers(Decals, View, Constants);
 
 	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
 	// 다음 패스가 깊이를 쓰기 가능한 DSV로 다시 꽂을 때 SRV로 남아 있으면 D3D가 강제로 떼므로 먼저 비운다
 	RenderCommand::UnbindShaderResource(DecalSceneDepthSlot, EShaderBindFlagBits::Pixel);
 }
 
-bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, FDecalConstants& Constants, const FMatrix& BoxToWorld)
+bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, FDecalConstants& Constants, const FMatrix& BoxToWorld)
 {
 	UMaterial* Material = Decal.Material;
 	if (!Decal.bVisible || !Material || Material->Textures.Num() == 0 || !Material->Textures[0])
 		return false;
 
+	// 시간 Fade(컴포넌트)와 화면 크기 Fade(이 뷰)를 곱한다. 다 사라진 데칼은 그리지 않는다.
+	const float FadeAlpha = Decal.FadeAlpha * ComputeDecalScreenFade(Decal, View, Constants.ViewportWidth);
+	if (FadeAlpha <= 0.0f)
+		return false;
+
 	Constants.DecalToWorld = BoxToWorld;
 	Constants.WorldToDecal = Decal.WorldToDecal;
 	Constants.DecalColor = ColorWorkflow::ToShaderColor(Decal.DecalColor);
-	Constants.FadeAlpha = Decal.FadeAlpha;
+	Constants.FadeAlpha = FadeAlpha;
 	RenderCommand::UpdateBufferData(DecalCB.get(), &Constants);
 
 	RenderCommand::BindShaderResource(DecalTextureSlot, Material->Textures[0], EShaderBindFlagBits::Pixel);
@@ -337,7 +359,7 @@ bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, FDecalConstants
 }
 
 // 데칼마다 투영 박스를 그린다. 박스가 덮는 픽셀마다 깊이로 월드 위치를 복원하고, 박스 밖이면 셰이더가 버린다.
-void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants, FTexture2D* SceneDepth)
+void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants, FTexture2D* SceneDepth)
 {
 	UStaticMesh* BoxMesh = UAssetManager::GetAssetByPath<UStaticMesh>("Cube");
 	if (!BoxMesh || !SceneDepth)
@@ -355,7 +377,7 @@ void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, 
 	const FMatrix UnitBoxScale = FMatrix::Identity.ApplyScale(FVector(2.0f, 2.0f, 2.0f));
 	for (const FDeferredDecalSceneProxy* Decal : Decals)
 	{
-		if (!Decal || !BindDecal(*Decal, Constants, UnitBoxScale * Decal->DecalToWorld))
+		if (!Decal || !BindDecal(*Decal, View, Constants, UnitBoxScale * Decal->DecalToWorld))
 			continue;
 		RenderCommand::DrawIndexed(BoxIndexCount);
 	}
@@ -364,7 +386,7 @@ void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, 
 }
 
 // 데칼마다 Prepass에 깊이를 쓴 불투명 메시를 다시 그린다. 보간된 월드 위치가 박스 밖이면 셰이더가 버린다.
-void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants)
+void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants)
 {
 	RenderCommand::BindShaderProgram(DecalMeshShader);
 	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
@@ -387,7 +409,7 @@ void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Deca
 	// TODO: 지금은 데칼마다 받는 메시 전부를 그린다. BVH(Broad) + OBB-AABB SAT(Narrow)로 겹치는 메시만 고르기
 	for (const FDeferredDecalSceneProxy* Decal : Decals)
 	{
-		if (!Decal || !BindDecal(*Decal, Constants, Decal->DecalToWorld))
+		if (!Decal || !BindDecal(*Decal, View, Constants, Decal->DecalToWorld))
 			continue;
 
 		for (const FStaticDrawGroup* Group : StaticGroups)

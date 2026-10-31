@@ -52,26 +52,25 @@ public:
 	//=====================================
 	//2. Fade
 
-	//공간 Fade
+	//데칼이 화면에서 차지하는 크기가 이 값보다 작아지면 흐려지다가 사라짐, 0이면 끔.
+	//데칼 박스를 감싸는 구의 반지름 * 카메라까지의 거리
 	float FadeScreenSize = 0.0f;
 
 
 	//시간 Fade
-	/**
-	* Time in seconds to wait before beginning to fade out the decal. Set fade duration and start delay to 0 to make persistent.
-	*/
-	float FadeStartDelay = 0.0f;
-
-	/**
-	* Time in seconds for the decal to fade out. Set fade duration and start delay to 0 to make persistent. Only fades in active simulation or game.
-	*/
-	float FadeDuration = 0.0f;
-	float FadeInDuration = 0.0f;
+	//생긴 뒤 얼마나 기다렸다가 나타나기 시작할지, 그동안 alpha는 0
 	float FadeInStartDelay = 0.0f;
 
-	/**
-	* Automatically destroys the owning actor after fully fading out.
-	*/
+	//0에서 1까지 나타나는데 걸리는 시간, 0이면 fadein없이 바로 보임
+	float FadeInDuration = 0.0f;
+
+	//셍긴 뒤 얼마나 유지하다가 사라지기 시작할지
+	float FadeStartDelay = 0.0f;
+
+	//1에서 0까지 사라지는 데 걸린 시간
+	float FadeDuration = 0.0f;
+
+	//완전히 사라지면(alpha = 0) 액터를 삭제할지
 	bool bDestroyOwnerAfterFade = false;
 
 	float GetFadeStartDelay() const { return FadeStartDelay; }
@@ -129,4 +128,14 @@ public:
 	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 	//~ End UObject Interface
 
+private:
+	// BeginPlay부터 흐른 시간. 에디터에서는 Tick하지 않으므로 Fade 없이 항상 보인다(UE와 같다).
+	float LifeTime = 0.0f;
+	// SetFadeIn/SetFadeOut을 부른 시각. UE처럼 지연은 호출한 순간부터 센다.
+	float FadeInStartTime = 0.0f;
+	float FadeOutStartTime = 0.0f;
+
+	// 시간 Fade 알파. UE DecalLifetimeOpacity처럼 페이드인과 페이드아웃 중 작은 값이다.
+	float ComputeLifetimeAlpha() const;
+	void UpdateProxyFadeAlpha();
 };

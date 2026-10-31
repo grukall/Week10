@@ -7,6 +7,7 @@
 #include "Render/Texture2D.h"
 #include "Render/DeferredDecalSceneProxy.h"
 #include "Engine/Scene.h"
+#include "GameFramework/Actor.h"
 
 namespace
 {
@@ -27,6 +28,8 @@ namespace
 UDecalComponent::UDecalComponent() : DecalSize(4.f, 8.f, 8.f)
 {
 	DecalMaterial = UAssetManager::Get().GetAssetByPath<UMaterial>("DecalMaterial");
+	// 시간 Fade를 매 프레임 계산한다. Tick은 플레이 중에만 등록된다.
+	PrimaryComponentTick.bCanEverTick = true;
 }
 
 void UDecalComponent::DrawDebug(FLineBatcher* LineBatcher) const
@@ -53,14 +56,8 @@ void UDecalComponent::SetFadeOut(float StartDelay, float Duration, bool DestroyO
 	FadeDuration = Duration;
 	bDestroyOwnerAfterFade = DestroyOwnerAfterFade;
 
-	//TODO : SetLifeSpan 추가하기
-	//if (SceneProxy != nullptr)
-	//{
-	//	GetWorld()->Scene->UpdateDecalFadeOutTime(this);
-	//}
-	//else
-	//{
-	//}
+	FadeOutStartTime = LifeTime;
+	UpdateProxyFadeAlpha();
 }
 
 void UDecalComponent::SetFadeIn(float StartDelay, float Duration)
@@ -68,20 +65,45 @@ void UDecalComponent::SetFadeIn(float StartDelay, float Duration)
 	FadeInStartDelay = StartDelay;
 	FadeInDuration = Duration;
 
-	//if (SceneProxy != nullptr)
-	//{
-	//	GetWorld()->Scene->UpdateDecalFadeInTime(this);
-	//}
-	//else
-	//{
-	//	MarkRenderStateDirty();
-	//}
+	FadeInStartTime = LifeTime;
+	UpdateProxyFadeAlpha();
 }
 
 void UDecalComponent::SetFadeScreenSize(float NewFadeScreenSize)
 {
 	FadeScreenSize = NewFadeScreenSize;
-	//MarkRenderStateDirty();
+	MarkSceneProxyDirty();   // 프록시가 복사해 두고 렌더러가 뷰마다 계산한다
+}
+
+float UDecalComponent::ComputeLifetimeAlpha() const
+{
+	float Alpha = 1.0f;
+
+	// 페이드인: 지연 동안 0, 이후 FadeInDuration 동안 0→1
+	const float InTime = LifeTime - FadeInStartTime - FadeInStartDelay;
+	if (FadeInDuration > 0.0f)
+		Alpha = std::min(Alpha, InTime / FadeInDuration);
+	else if (InTime < 0.0f)
+		Alpha = 0.0f;
+
+	// 페이드아웃: 지연 동안 1, 이후 FadeDuration 동안 1→0. 지연과 길이가 둘 다 0이면 계속 남는다.
+	const float OutTime = LifeTime - FadeOutStartTime - FadeStartDelay;
+	if (FadeDuration > 0.0f)
+		Alpha = std::min(Alpha, 1.0f - OutTime / FadeDuration);
+	else if (FadeStartDelay > 0.0f && OutTime >= 0.0f)
+		Alpha = 0.0f;
+
+	return FMath::Clamp(Alpha, 0.0f, 1.0f);
+}
+
+void UDecalComponent::UpdateProxyFadeAlpha()
+{
+	if (!SceneProxy)
+		return;
+
+	// UE처럼 편집 중에는 Fade하지 않는다
+	const AActor* Owner = GetOwner();
+	SceneProxy->FadeAlpha = (Owner && Owner->HasActorBegunPlay()) ? ComputeLifetimeAlpha() : 1.0f;
 }
 
 void UDecalComponent::SetDecalColor(const FLinearColor & Color)
@@ -137,6 +159,13 @@ void UDecalComponent::InitializeComponent()
 void UDecalComponent::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// 지연은 플레이를 시작한 순간부터 센다. 첫 Tick 전 프레임도 페이드인 전 상태로 보이게 바로 반영한다.
+	// 다 사라진 뒤 액터를 지우는 일은 UE의 SetLifeSpan 대신 TickComponent가 한다.
+	LifeTime = 0.0f;
+	FadeInStartTime = 0.0f;
+	FadeOutStartTime = 0.0f;
+	UpdateProxyFadeAlpha();
 }
 
 void UDecalComponent::EndPlay()
@@ -148,10 +177,15 @@ void UDecalComponent::TickComponent(float DeltaTime)
 {
 	Super::TickComponent(DeltaTime);
 
-	//TODO : Fade 관련 값들을 계산해서 Alpha값 설정
-	if (SceneProxy)
+	LifeTime += DeltaTime;
+	UpdateProxyFadeAlpha();
+
+	// 다 사라지면 액터를 지운다. UE는 SetLifeSpan 타이머로 하지만 여기서는 Tick이 시간을 직접 본다.
+	const bool bHasFadeOut = FadeDuration > 0.0f || FadeStartDelay > 0.0f;
+	if (bDestroyOwnerAfterFade && bHasFadeOut && LifeTime - FadeOutStartTime >= FadeStartDelay + FadeDuration)
 	{
-		SceneProxy->FadeAlpha = 1.f;
+		if (AActor* Owner = GetOwner())
+			Owner->Destroy();
 	}
 }
 

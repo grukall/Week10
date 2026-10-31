@@ -225,10 +225,10 @@ private:
 	void UpdateMaterialParams(const FRenderPacket& RenderPacket);
 	// 데칼 공통 상수를 채우고 방식에 맞게 그린다. 렌더 타깃과 읽기 전용 깊이는 호출자가 바인딩해 둔다.
 	void DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method);
-	void DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants, FTexture2D* SceneDepth);
-	void DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, FDecalConstants& Constants);
-	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 그릴 수 없는 데칼이면 false
-	bool BindDecal(const FDeferredDecalSceneProxy& Decal, FDecalConstants& Constants, const FMatrix& BoxToWorld);
+	void DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants, FTexture2D* SceneDepth);
+	void DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants);
+	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 숨겼거나 Fade로 다 사라져 그릴 것이 없으면 false
+	bool BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, FDecalConstants& Constants, const FMatrix& BoxToWorld);
 	void UpdatePerObjectConstants(const FRenderPacket& RenderPacket, const FMatrix& ViewProjection);
 	void EnsurePerObjectSlotCapacity(uint32 SlotCount);
 	void UploadPerObjectConstants();
