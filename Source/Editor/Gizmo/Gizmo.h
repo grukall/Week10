@@ -1,34 +1,19 @@
 #pragma once
 
+#include "GizmoTypes.h"
 #include "Collision/Ray.h"
 #include "Math/Transform.h"
-#include "Component/SceneComponent.h"
+#include "TransformGizmoTarget.h"
 
 class UCameraComponent;
-
-enum class EGizmoMode
-{
-	Location,
-	Rotation,
-	Scale,
-};
-
-enum class EGizmoSpace
-{
-	Local,
-	World,
-};
 
 class FGizmo   // 상태 + 로직
 {
 public:
 	// Gizmo 대상 설정
-	void SetTarget(USceneComponent* InTarget, bool InbUseActorBounds = false)
-	{ 
-		Target = InTarget; 
-		bUseActorBounds = InbUseActorBounds; 
-	}
-	USceneComponent* GetTarget() const { return Target; }
+	void SetTarget(ITransformGizmoTarget* InTarget, bool InbUseActorBounds = false);
+	ITransformGizmoTarget* GetTarget() const { return Target; }
+	bool HasValidTarget() const { return Target && Target->IsValid(); }
 
 	// Gizmo 모드(이동, 회전, 크기)
 	void SetMode(EGizmoMode InMode) { Mode = InMode; }
@@ -50,17 +35,14 @@ public:
 	int PickLinearAxis(const FVector2& MousePos, const FMatrix& ViewProj, int ScreenW, int ScreenH);
 	int PickRotationAxis(const FVector2& MousePos, const FMatrix& ViewProj, int ScreenW, int ScreenH);
 
-
 	void BeginDrag(int Axis, const FRay& MouseRay, const FVector2& MousePos);
 	void UpdateDrag(const FRay& MouseRay, const FVector2& MousePos);
 	void EndDrag();
 
 	float ComputeAngleOnPlane(const FVector& Point, int Axis) const;
 
-	inline FTransform GetTransform() const { return Target ? Target->GetTransform() : FTransform(); }
-	inline FVector GetLocation() const { return Target ? Target->GetRelativeLocation() : FVector(0, 0, 0); }
-	inline FRotator GetRotation() const { return Target ? Target->GetRelativeRotation() : FRotator(0, 0, 0); }
-	inline FVector GetScale() const { return Target ? Target->GetRelativeScale3D() : FVector(0, 0, 0); }
+	FVector GetLocation() const;
+	FRotator GetRotation() const;
 
 	FVector GetRenderLocation() const;
 	// 원근 View에서만 카메라 거리에 맞춰 크기 보정 위치를 구하고 직교 View는 월드 위치를 유지한다.
@@ -73,7 +55,7 @@ private:
 	EGizmoMode Mode = EGizmoMode::Location;
 	EGizmoSpace Space = EGizmoSpace::Local;
 	FTransform Transform = FTransform();
-	USceneComponent* Target = nullptr;
+	ITransformGizmoTarget* Target = nullptr;
 	bool bUseActorBounds = false;
 
 	int HoveredAxis = -1;
@@ -81,9 +63,6 @@ private:
 
 	FVector2 DragStartMousePos;
 	FVector DragStartPoint;
-	FVector DragStartLocation;
-	FRotator DragStartRotation;
-	FVector DragStartScale;
 	FVector DragAxisDirection;
 	FVector DragStartRenderLocation;
 

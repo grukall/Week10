@@ -110,6 +110,7 @@ bool UEditorEngine::Init()
 	GizmoRenderer->Init(Renderer);
 
 	Gizmo = MakeUnique<FGizmo>();
+	SceneComponentGizmoTarget = MakeUnique<FSceneComponentGizmoTarget>();
 
 	// Skybox·Fog·FXAA·Gamma는 Game과 공용인 파이프라인이 소유한다.
 	ScenePipeline.Init(Renderer);
@@ -180,7 +181,7 @@ bool UEditorEngine::Init()
 	OutlinerPanel->SetSelectionCallback(
 		[this](USceneComponent* Root)
 		{
-			Gizmo->SetTarget(Root, true);
+			SetSceneGizmoTarget(Root, true);
 			DetailsPanel->SetTarget(Root ? Root->GetOwner() : nullptr);
 
 			UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(Root);
@@ -199,16 +200,16 @@ bool UEditorEngine::Init()
 				AActor* Owner = SceneComponent->GetOwner();
 				if (Owner && SceneComponent == Owner->GetRootComponent())
 				{
-					Gizmo->SetTarget(SceneComponent, true);
+					SetSceneGizmoTarget(SceneComponent, true);
 				}
 				else
 				{
-					Gizmo->SetTarget(SceneComponent);
+					SetSceneGizmoTarget(SceneComponent);
 				}
 			}
 			else
 			{
-				Gizmo->SetTarget(nullptr);
+				SetSceneGizmoTarget(nullptr);
 			}
 		}
 	);
@@ -845,7 +846,7 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 		OutlineRenderer->OnRender(*Outline, ViewProjection, PassInfo.ViewportSetting);
 	}
 
-	if (bShowEditorOverlay && IsInViewWorld(Gizmo->GetTarget()))
+	if (bShowEditorOverlay && IsInViewWorld(SceneComponentGizmoTarget->GetComponent()))
 	{
 		//auto Target = Cast<UPrimitiveComponent>(Gizmo->GetTarget());
 		//FBox box = Target->CalcBounds();
@@ -936,7 +937,7 @@ void UEditorEngine::UpdateGizmoAndPicking()
 
 	// 다른 월드의 선택 대상은 이 View에 Gizmo가 보이지 않으므로 조작하지 않는다.
 	UWorld* ViewWorld = Client->GetWorld();
-	const USceneComponent* GizmoTarget = Gizmo->GetTarget();
+	const USceneComponent* GizmoTarget = SceneComponentGizmoTarget->GetComponent();
 	const bool bGizmoInView = !GizmoTarget ||
 		(GizmoTarget->GetOwner() && GizmoTarget->GetOwner()->GetWorld() == ViewWorld);
 
@@ -1464,4 +1465,15 @@ void UEditorEngine::ReleaseWorldShadowResources(UWorld* World)
     SceneRenderer.ReleaseWorldShadows(Context->ShadowResourceIndex);
     Renderer->ReleaseShadowResources(Context->ShadowResourceIndex);
     Context->ShadowResourceIndex = InvalidShadowResourceIndex;
+}
+
+void UEditorEngine::SetSceneGizmoTarget(USceneComponent* Component, bool bUseActorBounds)
+{
+	Gizmo->SetTarget(nullptr);
+	SceneComponentGizmoTarget->SetComponent(Component);
+
+	if (Component)
+	{
+		Gizmo->SetTarget(SceneComponentGizmoTarget.get(), bUseActorBounds);
+	}
 }

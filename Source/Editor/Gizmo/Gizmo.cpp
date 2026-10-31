@@ -22,6 +22,47 @@ static const float PerspectiveGizmoDistance = 10.0f;
 // 직교 View 높이에 대한 기즈모 크기 비율. 원근 FOV 60도에서 위 거리로 그린 크기와 같게 맞춘다 (tan 30도 = 0.57735).
 static const float OrthoGizmoViewHeightRatio = 1.0f / (2.0f * PerspectiveGizmoDistance * 0.57735027f);
 
+void FGizmo::SetTarget(ITransformGizmoTarget* InTarget, bool InbUseActorBounds)
+{
+	if (Target && DraggingAxis >= 0)
+	{
+		Target->EndTransformEdit();
+	}
+	Target = InTarget;
+	bUseActorBounds = InbUseActorBounds;
+	HoveredAxis = -1;
+	DraggingAxis = -1;
+}
+
+FVector FGizmo::GetLocation() const
+{
+	if (!HasValidTarget())
+	{
+		return FVector::ZeroVector;
+	}
+	const FMatrix World = Target->GetWorldMatrix();
+	return FVector(World[3][0], World[3][1], World[3][2]);
+}
+
+FRotator FGizmo::GetRotation() const
+{
+	if (!HasValidTarget())
+	{
+		return FRotator(0.0f, 0.0f, 0.0f);
+	}
+
+	FMatrix RotationMatrix = Target->GetWorldMatrix();
+	for (int32 Axis = 0; Axis < 3; ++Axis)
+	{
+		FVector UnitAxis(RotationMatrix[Axis][0], RotationMatrix[Axis][1], RotationMatrix[Axis][2]);
+		UnitAxis = UnitAxis.GetSafeNormal();
+		RotationMatrix[Axis][0] = UnitAxis.X;
+		RotationMatrix[Axis][1] = UnitAxis.Y;
+		RotationMatrix[Axis][2] = UnitAxis.Z;
+	}
+	return MatrixToRotator(RotationMatrix);
+}
+
 // 입력 View의 카메라 조건으로 축 선택과 드래그를 갱신한다.
 void FGizmo::Update(const FRay& MouseRay, const FVector2& MousePos, const FMatrix& ViewProj, int ScreenW, int ScreenH, bool bMouseDown, const FVector& CameraLocation, const bool bCameraOrthographic)
 {
@@ -29,7 +70,7 @@ void FGizmo::Update(const FRay& MouseRay, const FVector2& MousePos, const FMatri
 	bViewCameraOrthographic = bCameraOrthographic;
 	ViewRenderScale = GetRenderScaleForView(ViewProj, bCameraOrthographic);
 
-	if (!Target) // 만약 현재 타겟이 없다면 
+	if (!HasValidTarget()) // 만약 현재 타겟이 없다면 
 	{
 		HoveredAxis = -1;
 		DraggingAxis = -1;
@@ -173,10 +214,8 @@ void FGizmo::BeginDrag(int Axis, const FRay& MouseRay, const FVector2& MousePos)
 {
 	DragStartMousePos = MousePos;
 	DraggingAxis = Axis;
-	DragStartLocation = GetLocation();
-	DragStartRenderLocation = GetRenderLocation();    
-	DragStartRotation = GetRotation();
-	DragStartScale = GetScale();
+	DragStartRenderLocation = GetRenderLocation();
+	Target->BeginTransformEdit();
 
 	DragAxisDirection = GetAxisDirection(Axis);
 	FVector axis = DragAxisDirection;
@@ -225,63 +264,85 @@ void FGizmo::UpdateDrag(const FRay& MouseRay, const FVector2& MousePos)
 	if (!RayIntersectsPlane(MouseRay, DragStartRenderLocation, DragPlaneNormal, t))
 		return;
 
-	FVector current = MouseRay.Origin + MouseRay.Direction * t;
+	FVector Current = MouseRay.Origin + MouseRay.Direction * t;
+
+	FGizmoTransformDelta Delta;
+	Delta.Mode = Mode;
+	Delta.Space = Space;
 
 	if (DraggingAxis == AXIS_SCREEN && Mode != EGizmoMode::Rotation)
 	{
 		if (Mode == EGizmoMode::Location)
-			Target->SetRelativeLocation(DragStartLocation + (current - DragStartPoint));
+		{
+			Delta.TranslationDelta = Current - DragStartPoint;
+		}
+
 		else
 		{
 			float dx = MousePos.X - DragStartMousePos.X;
 			float dy = DragStartMousePos.Y - MousePos.Y;   // 화면 Y는 아래가 +
-			float scaleDelta = (dx + dy) * 0.005f;
 
-			float factor = 1.0f + scaleDelta;
-			if (factor < 0.01f) factor = 0.01f;
+			float Factor = 1.0f + (dx + dy) * 0.005f;
+			if (Factor < 0.01f)
+			{
+				Factor = 0.01f;
+			}
 
-			Target->SetRelativeScale3D(DragStartScale * factor);
+			Delta.ScaleFactor = FVector(Factor, Factor, Factor);
 		}
+		Target->ApplyTransformDelta(Delta);
 		return;
 	}
 
 	if (Mode == EGizmoMode::Rotation)
 	{
-		float currentAngle = ComputeAngleOnPlane(current, DraggingAxis);
-		float deltaAngle = currentAngle - DragStartAngle;
+		float CurrentAngle = ComputeAngleOnPlane(Current, DraggingAxis);
+		float DeltaAngle = CurrentAngle - DragStartAngle;
 
-		FQuat delta = FQuat::MakeFromAxisAngle(DragAxisDirection, deltaAngle);
-		FQuat start = DragStartRotation.Quaternion();
-
-		FQuat result = delta * start;
-
-		Target->SetRelativeRotation(result.ToFRotator());
+		Delta.RotationDelta = FQuat::MakeFromAxisAngle(DragAxisDirection, DeltaAngle);
+		Target->ApplyTransformDelta(Delta);
 		return;
 	}
 
-	FVector delta = current - DragStartPoint;
-	float amount = delta.Dot(DragAxisDirection);
+	const FVector Movement = Current - DragStartPoint;
+	const float Amount = Movement.Dot(DragAxisDirection);
 
 	if (Mode == EGizmoMode::Location)
-		Target->SetRelativeLocation(DragStartLocation + DragAxisDirection * amount);
+	{
+		Delta.TranslationDelta = DragAxisDirection * Amount;
+	}
 	else   // Scale
 	{
 		// 기즈모 크기 기준으로 나눠 직교 줌과 상관없이 같은 화면 드래그에 같은 배율이 되게 한다.
-		float factor = 1.0f + amount / ViewRenderScale;
-		if (factor < 0.01f) factor = 0.01f;
+		float Factor = 1.0f + Amount / ViewRenderScale;
+		if (Factor < 0.01f)
+		{
+			Factor = 0.01f;
+		}
 
-		FVector NewScale = DragStartScale;
-		if (DraggingAxis == 0)      NewScale.X *= factor;
-		else if (DraggingAxis == 1) NewScale.Y *= factor;
-		else                        NewScale.Z *= factor;
-
-		Target->SetRelativeScale3D(NewScale);
+		if (DraggingAxis == 0)
+		{
+			Delta.ScaleFactor.X = Factor;
+		}
+		else if (DraggingAxis == 1)
+		{
+			Delta.ScaleFactor.Y = Factor;
+		}
+		else
+		{
+			Delta.ScaleFactor.Z = Factor;
+		}
 	}
+	Target->ApplyTransformDelta(Delta);
 }
 
 // 드래그 축을 비워 조작을 종료한다.
 void FGizmo::EndDrag()
 {
+	if (Target && DraggingAxis >= 0)
+	{
+		Target->EndTransformEdit();
+	}
 	DraggingAxis = -1;
 }
 
@@ -320,9 +381,9 @@ FVector FGizmo::GetAxisDirection(int Axis) const
 
 	if (bUseLocal && Target)
 	{
-		FMatrix rot = Target->GetRelativeRotation().Quaternion().ToFMatrix();
-		FVector4 v = rot.TransformVector(AxisDirs[Axis]);
-		return FVector(v.X, v.Y, v.Z).Normalized();
+		const FMatrix World = Target->GetWorldMatrix();
+		const FVector AxisDirection(World[Axis][0], World[Axis][1], World[Axis][2]);
+		return AxisDirection.GetSafeNormal();
 	}
 	return AxisDirs[Axis];
 }
@@ -336,9 +397,12 @@ FVector FGizmo::GetRenderLocation() const
 // 직교에서는 대상 위치, 원근에서는 카메라 앞 일정 거리로 표시 위치를 정한다.
 FVector FGizmo::GetRenderLocationForView(const FVector& CameraLocation, const bool bCameraOrthographic) const
 {
-	if (!Target) return FVector(0, 0, 0);
+	if (!Target)
+	{
+		return FVector(0, 0, 0);
+	}
 
-	FVector PivotLocation = Target->GetWorldLocation();
+	FVector PivotLocation = GetLocation();
 
 	// bounds 합집합 중앙에 기즈모 표시
 	/*if (bUseActorBounds)

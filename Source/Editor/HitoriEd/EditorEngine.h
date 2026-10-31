@@ -10,6 +10,7 @@
 #include "Editor/EditorUI/ImGuiRenderer.h"
 #include "Editor/Rendering/GridRenderer.h"
 #include "Editor/Gizmo/GizmoRenderer.h"
+#include "Editor/Gizmo/SceneComponentGizmoTarget.h"
 #include "Render/LineBatcher.h"
 #include "Render/DepthViewRenderer.h"
 #include "Render/ShadowCascadeDebugRenderer.h"
@@ -127,6 +128,7 @@ private:
 	//Depth Pass
 	void RenderDepthPass(const FRenderingInfo& ViewRenderingInfo, const FMatrix& ViewProjection, const FVector& ViewCameraLocation, const FVector& ViewCameraForward);
 
+	void SetSceneGizmoTarget(USceneComponent* Component, bool bUseActorBounds = false);
 
 
 	FWorldContext& GetEditorWorldContext();
@@ -210,4 +212,6 @@ private:
 	void OpenScene();
 	void SaveCurrentScene();
 	void SaveSceneAs();
+
+	TUniquePtr<FSceneComponentGizmoTarget> SceneComponentGizmoTarget;
 };
