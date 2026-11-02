@@ -9,7 +9,9 @@
 #include "Editor/Gizmo/Gizmo.h"
 #include "Editor/Gizmo/BoneGizmoTarget.h"
 
+class AActor;
 class USkeletalMesh;
+class USkeletalMeshComponent;
 class AStaticMeshActor;
 class ADirectionalLightActor;
 class AAmbientLightActor;
@@ -52,6 +54,7 @@ public:
 	void UpdateBoneGizmoInput(bool bInputEnabled);
 
 	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
+	void RefreshSkeletalPreviewMesh();
 
 private:
 	void BuildBoneHierarchy();
@@ -62,6 +65,9 @@ private:
 
 private:
 	USkeletalMesh* SkeletalMesh = nullptr;
+	AActor* SkeletalPreviewActor = nullptr;
+	USkeletalMeshComponent* SkeletalPreviewComponent = nullptr;
+
 	TArray<FTransform> EditableLocalPose; // 수정할 현재 자세
 	TArray<FMatrix> GlobalPose;
 	int32 SelectedBoneIndex = -1;         // 현재 선택된 BoneIndex

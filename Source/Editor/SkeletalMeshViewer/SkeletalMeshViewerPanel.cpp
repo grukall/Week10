@@ -12,6 +12,8 @@
 #include "Input/InputSystem.h"
 #include "Render/LineBatcher.h"
 #include "Render/SkeletalMesh.h"
+#include "GameFramework/Actor.h"
+#include "Component/SkeletalMeshComponent.h"
 
 namespace
 {
@@ -192,12 +194,14 @@ void FSkeletalMeshViewerPanel::OnRender()
 			{
 				EditableLocalPose[SelectedBoneIndex] = EditedTransform;
 				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
 			}
 
 			if (ImGui::Button("Reset Bone"))
 			{
 				EditableLocalPose[SelectedBoneIndex] = MatrixToTransform(SelectedBone.RefLocalMatrix);
 				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Reset All"))
@@ -207,6 +211,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 					EditableLocalPose[BoneIndex] = MatrixToTransform(SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix);
 				}
 				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
 			}
 			
 			if (GlobalPose.IsValidIndex(SelectedBoneIndex))
@@ -370,6 +375,10 @@ void FSkeletalMeshViewerPanel::CreateDefaultSkeletalPreviewScene()
 	{
 		return;
 	}
+
+	SkeletalPreviewActor = SkeletalPreviewWorld->SpawnActor<AActor>(FName("SkeletalPreviewActor"));
+	SkeletalPreviewComponent = 
+		Cast<USkeletalMeshComponent>(SkeletalPreviewActor->AddComponent(USkeletalMeshComponent::StaticClass(), FName("SkeletalPreviewComponent")));
 	
 	UStaticMesh* PlaneMesh = UAssetManager::GetAssetByPath<UStaticMesh>("Plane");
 	if (PlaneMesh)
@@ -493,7 +502,17 @@ void FSkeletalMeshViewerPanel::RebuildGlobalPose()
 		{
 			GlobalPose[BoneIndex] = LocalMatrix;
 		}
+
 	}
+
+	TArray<FMatrix> LocalPoseMatrices;
+	LocalPoseMatrices.Reserve(EditableLocalPose.Num());
+
+	for (const FTransform& LocalTransform : EditableLocalPose)
+	{
+		LocalPoseMatrices.Add(LocalTransform.GetLocalMatrix());
+	}
+	SkeletalPreviewComponent->SetSkeletalMeshPose(LocalPoseMatrices);
 	bPoseDirty = false;
 }
 
@@ -720,6 +739,7 @@ int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FM
 void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 {
 	SkeletalMesh = InSkeletalMesh;
+	SkeletalPreviewComponent->SetSkeletalMeshData(&SkeletalMesh->MeshData);
 	EditableLocalPose.Reset();
 	GlobalPose.Reset();
 	SelectedBoneIndex = -1;
@@ -735,4 +755,13 @@ void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 		SelectedBoneIndex = RootBones[0];
 	}
 	bPoseDirty = true;
+}
+
+void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh()
+{
+	if (bPoseDirty)
+	{
+		RebuildGlobalPose();
+	}
+	SkeletalPreviewComponent->RefreshMesh();
 }

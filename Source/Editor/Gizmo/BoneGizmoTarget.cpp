@@ -130,6 +130,11 @@ void FBoneGizmoTarget::ApplyTransformDelta(const FGizmoTransformDelta& Delta)
 
 void FBoneGizmoTarget::EndTransformEdit()
 {
+	if (bEditing)
+	{
+		Viewer->RefreshSkeletalPreviewMesh();
+	}
+
 	bEditing = false;
 	EditingBoneIndex = -1;
 	ParentBoneIndex = -1;
