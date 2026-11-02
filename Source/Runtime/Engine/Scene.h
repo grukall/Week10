@@ -56,6 +56,8 @@ public:
 	// 가져가지 않는 프레임에도 쌓이므로 상한을 넘으면 "전부 무효"로 접는다.
 	void AddShadowInvalidation(const FAABB& Bounds);
 	void InvalidateAllShadows();
+	// 바운드와 겹치는 데칼의 잘라 낸 메시를 다시 만들게 한다. 물체가 떠난 자리와 새 자리 모두 부른다.
+	void InvalidateDecalMeshes(const FAABB& Bounds);
 	void ConsumeShadowInvalidations(TArray<FAABB>& OutBounds, bool& bOutAll);
 
 	void BuildStructuredLight(TArray<FPointLightInfo>& OutPointLight, TArray<FSpotLightInfo>& OutSpotLight, TArray<FCullingLight>& OutCullingLights, const FMatrix& ViewMatrix, const TArray<FShadowRequestPerLight>* ShadowRequestsPerLight = nullptr) const;

@@ -9,6 +9,9 @@
 #include "Engine/LightSceneProxy.h"
 #include "Camera/CameraProjection.h"
 #include "Core/Stats/LightweightStats.h"
+#include "Render/DeferredDecalSceneProxy.h"
+#include "Render/RenderCommand.h"
+#include "Render/Buffer.h"
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
@@ -600,6 +603,206 @@ void FSceneRenderer::BuildShadowCasterQueue(UWorld& World, FShadowDepthPassInfo&
                                     }
                                     );
 
+}
+
+namespace
+{
+    bool TriangleIntersectsUnitBox(const FVector(&V)[3])
+    {
+        auto IsSeparated = [&](const FVector& L)
+            {
+				// 축 길이가 너무 작으면 삼각형이 평면에 붙어있거나  평면과 평행한 경우 0이 될 수 있다.
+                if (L.Dot(L) < KINDA_SMALL_NUMBER)
+                    return false;
+
+                const float P0 = V[0].Dot(L), P1 = V[1].Dot(L), P2 = V[2].Dot(L);
+                const float Min = std::min({ P0, P1, P2 });
+                const float Max = std::max({ P0, P1, P2 });
+
+				//박스 투영 시 길이 = |L.x| + |L.y| + |L.z|
+                const float R = std::abs(L.X) + std::abs(L.Y) + std::abs(L.Z);
+                return Min > R || Max < -R;
+            };
+
+        const FVector BoxAxes[3] = { FVector(1, 0, 0), FVector(0, 1, 0), FVector(0, 0, 1) };
+        const FVector Edges[3] = { V[1] - V[0], V[2] - V[1], V[0] - V[2] };
+
+        //박스 면 3개
+        for (const FVector& Axis : BoxAxes)
+            if (IsSeparated(Axis)) return false;
+
+        //삼각형 면 1개
+        if (IsSeparated(Edges[0].Cross(Edges[1]))) return false;
+
+        //삼각형 모서리 × 박스 축
+        for (const FVector& Edge : Edges)
+            for (const FVector& Axis : BoxAxes)
+                if (IsSeparated(Edge.Cross(Axis))) return false;
+
+        return true;
+    }
+
+	int32 ClipPolygonByPlane(const FVector* In, int32 Count, FVector* Out, int32 Axis, float Sign)
+	{
+		// 평면 Sign * P[Axis] = 1 하나로 볼록 다각형을 자른다. 안쪽은 Sign * P[Axis] <= 1 이다.
+		// d = 1 - Sign * P[Axis] 는 평면까지 남은 거리로, 0 이상이면 안이다.
+		int32 OutCount = 0;
+		for (int32 i = 0; i < Count; ++i)
+		{
+			const FVector& Current = In[i];
+			const FVector& Next = In[(i + 1) % Count];
+
+			const float DCurrent = 1.0f - Sign * Current[Axis];
+			const float DNext = 1.0f - Sign * Next[Axis];
+			const bool bCurrentInside = DCurrent >= 0.0f;
+			const bool bNextInside = DNext >= 0.0f;
+
+			// 시작점이 안이면 그대로 남긴다
+			if (bCurrentInside)
+			{
+				Out[OutCount++] = Current;
+			}
+
+			// 간선이 평면을 넘으면 교점을 넣는다. 부호가 달라 분모는 0이 아니다
+			if (bCurrentInside != bNextInside)
+			{
+				const float T = DCurrent / (DCurrent - DNext);
+				Out[OutCount++] = Current + (Next - Current) * T;
+			}
+		}
+		return OutCount;
+	}
+
+	// 데칼 공간 삼각형을 단위 박스 6면으로 잘라, 남은 볼록 다각형을 부채꼴 삼각형으로 나눠 OutVertices 뒤에 3개씩 붙인다.
+	// 잘려서 아무것도 안 남으면 false 를 반환한다.
+	bool TriangleClipingInUnitBox(const FVector(&V)[3], TArray<FVector>& OutVertices)
+	{
+		// 삼각형은 평면 하나를 지날 때마다 꼭짓점이 최대 1개 늘어서 6면 뒤에는 최대 9개다
+		FVector BufferA[9] = { V[0], V[1], V[2] };
+		FVector BufferB[9];
+		FVector* In = BufferA;
+		FVector* Out = BufferB;
+		int32 Count = 3;
+
+		for (int32 Axis = 0; Axis < 3; ++Axis)
+		{
+			for (float Sign : { 1.0f, -1.0f })
+			{
+				// Sign * P[Axis] <= 1 인 쪽만 남긴다
+				Count = ClipPolygonByPlane(In, Count, Out, Axis, Sign);
+				if (Count < 3) return false;	// 다 잘려 나갔거나 선/점만 남았다
+				std::swap(In, Out);				// 이번 출력이 다음 입력이다
+			}
+		}
+
+		// 볼록 다각형이라 0번 점 기준 부채꼴로 나누면 된다
+		for (int32 i = 1; i + 1 < Count; ++i)
+		{
+			OutVertices.Add(In[0]);
+			OutVertices.Add(In[i]);
+			OutVertices.Add(In[i + 1]);
+		}
+		return true;
+	}
+}
+
+void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDeferredDecalSceneProxy*>& Decals)
+{
+	for (FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		// 뷰포트마다 불리므로 박스나 받는 물체가 바뀐 데칼만 다시 만든다
+		if (!Decal || !Decal->bVisible || !Decal->bMeshDirty) continue;
+		Decal->bMeshDirty = false;
+		Decal->MeshVertices.Reset();
+
+		// 잘라 낸 삼각형을 데칼 공간에 모은 뒤 마지막에 월드로 되돌린다
+		TArray<FVector> DecalSpaceVertices;
+        const FAABB& DecalBounds = Decal->Bounds;
+		Scene.BVH.Query(
+			[&](const FBox& Box)
+			{
+                //1. Broad phase
+                return IntersectsAABB(MakeWorldBounds(Box), DecalBounds);
+			},
+			[&](FPrimitiveSceneProxy* Proxy)
+			{
+				if (!Proxy || !Proxy->IsVisible() || !Proxy->ReceivesDecal()) return;
+				const FAABB& ProxyBounds = Proxy->GetBounds();
+
+                //AABB 판정
+				if (!IntersectsAABB(ProxyBounds, DecalBounds)) return;
+
+				//TODO : StaticMeshData만 다룬다. SkeletalMeshData는 다른 방식으로 처리해야 한다.
+				UStaticMesh* Mesh = Proxy->GetMesh();
+				if (!Mesh || !Mesh->MeshData.TriangleBVH || !Proxy->GetRenderState()) return;
+
+				// 반투명은 깊이를 쓰지 않아 데칼 메시가 허공에 뜬다. 불투명 섹션이 하나도 없으면 건너뛴다
+				const FCachedMeshLOD& LOD0 = Proxy->GetLOD(0);
+				bool bHasOpaque = false;
+				for (uint32 i = 0; i < LOD0.NumSections && !bHasOpaque; ++i)
+				{
+					const UMaterial* Material = Proxy->GetSection(LOD0.FirstSection + i).Material;
+					bHasOpaque = Material && Material->BlendState == EBlendState::Opaque;
+				}
+				if (!bHasOpaque) return;
+
+				//2. Narrow phase
+                //2.1 Decal OBB를 Mesh Local 영역 AABB로 변경
+                const FCollisionBox& OBB = Decal->OBB;
+                const FMatrix& WorldToLocal = Proxy->GetWorldToLocal();
+
+                FBox LocalBox{ FVector(FLT_MAX, FLT_MAX, FLT_MAX), FVector(-FLT_MAX, -FLT_MAX, -FLT_MAX) };
+                for (int32 i = 0; i < 8; ++i)
+                {
+                    const FVector Corner = OBB.Center
+                        + OBB.Axis[0] * ((i & 1) ? OBB.Extent.X : -OBB.Extent.X)
+                        + OBB.Axis[1] * ((i & 2) ? OBB.Extent.Y : -OBB.Extent.Y)
+                        + OBB.Axis[2] * ((i & 4) ? OBB.Extent.Z : -OBB.Extent.Z);
+
+                    const FVector Local = WorldToLocal.TransformPosition(Corner);
+                    LocalBox.Min.X = std::min(LocalBox.Min.X, Local.X);
+                    LocalBox.Min.Y = std::min(LocalBox.Min.Y, Local.Y);
+                    LocalBox.Min.Z = std::min(LocalBox.Min.Z, Local.Z);
+                    LocalBox.Max.X = std::max(LocalBox.Max.X, Local.X);
+                    LocalBox.Max.Y = std::max(LocalBox.Max.Y, Local.Y);
+                    LocalBox.Max.Z = std::max(LocalBox.Max.Z, Local.Z);
+                }
+
+				//2.2 Mesh Local 삼각형 BVH에서 그 박스와 겹치는 삼각형을 찾는다
+                const FMatrix LocalToDecal = Proxy->GetLocalToWorld() * Decal->WorldToDecal;
+                Mesh->MeshData.TriangleBVH->Query(
+                    [&](const FBox& Node)
+                    {
+                        return !(Node.Max.X < LocalBox.Min.X || Node.Min.X > LocalBox.Max.X
+                            || Node.Max.Y < LocalBox.Min.Y || Node.Min.Y > LocalBox.Max.Y
+                            || Node.Max.Z < LocalBox.Min.Z || Node.Min.Z > LocalBox.Max.Z);
+                    },
+                    [&](const FMeshTriangleElement& Tri)
+                    {
+						//2.3 데칼 공간([-1,1]³)으로 옮겨 SAT로 박스와 겹치는지 본다
+						const FVector V[3] = {
+							LocalToDecal.TransformPosition(Tri.V0),
+							LocalToDecal.TransformPosition(Tri.V0 + Tri.Edge1),
+							LocalToDecal.TransformPosition(Tri.V0 + Tri.Edge2) };
+						if (!TriangleIntersectsUnitBox(V)) return;
+
+                        //3. Clip: 박스 6면으로 잘라 남은 삼각형을 DecalSpaceVertices에 3개씩 붙인다
+						TriangleClipingInUnitBox(V, DecalSpaceVertices);
+                    });
+			});
+
+		// 데칼 공간 → 월드. 셰이더는 ViewProjection만 곱하고 UV는 ShadeDecal이 월드 위치로 계산한다
+		Decal->MeshVertices.Reserve(DecalSpaceVertices.Num());
+		for (const FVector& V : DecalSpaceVertices)
+			Decal->MeshVertices.Add(Decal->DecalToWorld.TransformPosition(V));
+
+		Decal->MeshVertexBuffer.reset();
+		if (!Decal->MeshVertices.IsEmpty())
+		{
+			Decal->MeshVertexBuffer = RenderCommand::CreateStaticVertexBuffer(Decal->MeshVertices.GetData(),
+				static_cast<uint32>(Decal->MeshVertices.Num() * sizeof(FVector)), sizeof(FVector));
+		}
+	}
 }
 
 namespace

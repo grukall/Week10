@@ -13,6 +13,7 @@ class UWorld;
 class FScene;
 class UPrimitiveComponent;
 class FDirectionalLightSceneProxy;
+struct FDeferredDecalSceneProxy;
 
 // Light별 Caster 컬링에 필요한 값. Light별 준비 함수가 채운다.
 struct FShadowCasterCullContext
@@ -93,6 +94,8 @@ public:
     // Caster 단위 컬링(플래그, 라이트 프러스텀, 그림자 볼륨 ∩ View, 쉐도우 맵 상 크기)을 한다.
     // todo: 현재는 LOD 0만 사용한다.
     void BuildShadowCasterQueue(UWorld& World, FShadowDepthPassInfo& Pass, const FShadowCasterCullContext& Context, FShadowCullingStats& Stats);
+
+    void BuildDecalReceivers(const FScene& Scene, const TArray<FDeferredDecalSceneProxy*>& Decals);
 
 private:
     // Light별 쉐도우 맵 캐시. Light 컴포넌트 UUID로 찾고, Light가 사라질 때까지 슬롯을 유지한다.

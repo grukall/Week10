@@ -3,6 +3,7 @@
 #include "Component/DecalComponent.h"
 #include "Asset/AssetManager.h"
 #include "Material.h"
+#include "Buffer.h"
 
 namespace
 {
@@ -15,6 +16,8 @@ namespace
 FDeferredDecalSceneProxy::FDeferredDecalSceneProxy(UDecalComponent* DecalComponent) : Component(DecalComponent)
 {
 }
+
+FDeferredDecalSceneProxy::~FDeferredDecalSceneProxy() = default;
 
 void FDeferredDecalSceneProxy::UpdateFromComponent()
 {
@@ -34,6 +37,9 @@ void FDeferredDecalSceneProxy::UpdateFromComponent()
 
 	//TODO : bVisible?
 	bVisible = true;
+
+	// 박스가 움직였거나 크기가 바뀌었으니 Mesh 방식의 잘라 낸 메시를 다시 만든다
+	bMeshDirty = true;
 
 	// 이동이 4행에 있는 행벡터 규칙이라 0~2행이 단위 박스의 월드 축이다. 행 길이가 반크기, 방향이 축이다.
 	const FVector Row[3] = {

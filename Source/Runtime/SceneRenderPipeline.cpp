@@ -67,6 +67,9 @@ bool FSceneRenderPipeline::RenderScene(FViewport& Viewport, UWorld& ViewWorld, c
     Lighting.NumShadowInfos = bReadyForShading ? Renderer->GetShadowResources(ShadowResourceIndex)->NumShadowInfos : 0u;
     Renderer->SetLighting(Lighting, Data.PointLights, Data.SpotLights);
 
+    if (Settings.ShowFlags.Decal && Settings.DecalMethod == EDecalMethod::Mesh)
+        SceneRenderer.BuildDecalReceivers(ViewWorld.GetScene(), ViewWorld.GetScene().Decals);
+
     // 불투명·반투명 Pass (Linear 씬 컬러)
     RenderOpaquePass(Viewport, SceneRenderingInfo, View, Lighting.Directional, Settings, ViewWorld.GetScene().Decals);
     // Viewport 자원을 GPU 바인딩이 붙잡지 않게 조명 패스 소비 후 해제한다.

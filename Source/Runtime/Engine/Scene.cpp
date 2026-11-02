@@ -65,6 +65,7 @@ void FScene::RemovePrimitive(UPrimitiveComponent* Component)
 
 	// 사라진 Caster의 그림자가 캐시에 남지 않게 한다.
 	AddShadowInvalidation(Proxy->GetBounds());
+	InvalidateDecalMeshes(Proxy->GetBounds());
 	Component->SceneProxy = nullptr;
 	delete Proxy;
 
@@ -88,6 +89,9 @@ void FScene::RemoveAllPrimitives()
 	BVH.Clear();
 	bElementListChanged = true;
 	InvalidateAllShadows();
+	// 지운 물체의 삼각형이 데칼 메시에 남지 않게 모두 다시 만든다
+	for (FDeferredDecalSceneProxy* Decal : Decals)
+		Decal->bMeshDirty = true;
 }
 
 void FScene::AddFogInfo(uint32 Id, const FFogInfo& FogInfo)
@@ -280,8 +284,10 @@ void FScene::UpdateAllTransforms()
 	{
 		// 메시·Material·CastShadow·가시성 변경은 그 자리의 그림자를 바꾼다.
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		Proxy->UpdateRenderState();
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		Proxy->bRenderStateQueued = false;
 	}
 	RenderStateDirtyProxies.Reset();
@@ -290,8 +296,10 @@ void FScene::UpdateAllTransforms()
 	{
 		// 떠난 자리와 새 자리 모두 그림자가 바뀐다.
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		Proxy->UpdateTransform();
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		PrimitiveBounds[Proxy->PackedIndex] = Proxy->GetBounds();
 		PrimitiveFlags[Proxy->PackedIndex] = Proxy->GetComponent()->IsVisible() ? 1 : 0;
 		Proxy->bQueuedForUpdate = false;
@@ -396,6 +404,17 @@ void FScene::InvalidateAllShadows()
 {
 	bShadowInvalidateAll = true;
 	ShadowInvalidationBounds.Reset();
+}
+
+void FScene::InvalidateDecalMeshes(const FAABB& Bounds)
+{
+	// 새로 추가된 프록시의 초기 바운드(원점, 크기 0)는 어느 데칼에도 들어간 적이 없다.
+	if (Bounds.Extent.X <= 0.0f && Bounds.Extent.Y <= 0.0f && Bounds.Extent.Z <= 0.0f) return;
+	for (FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		if (IntersectsAABB(Bounds, Decal->Bounds))
+			Decal->bMeshDirty = true;
+	}
 }
 
 void FScene::ConsumeShadowInvalidations(TArray<FAABB>& OutBounds, bool& bOutAll)

@@ -5,15 +5,19 @@
 #include "Math/Matrix.h"
 #include "Math/Color.h"
 #include "Core/Types.h"
+#include "Containers/Array.h"
 
 class FScene;
 class UDecalComponent;
 class UMaterial;
+class FPrimitiveSceneProxy;
+class FVertexBuffer;
 
 struct FDeferredDecalSceneProxy
 {
 public:
     explicit FDeferredDecalSceneProxy(UDecalComponent* DecalComponent);
+    ~FDeferredDecalSceneProxy();       // FVertexBuffer가 불완전 타입이라 cpp에서 지운다
     void UpdateFromComponent();       // 컴포넌트 → 스냅샷 복사
     UDecalComponent* GetComponent() { return Component; }
     FScene* GetScene() { return Scene; }
@@ -31,6 +35,10 @@ public:
     // 컬링용 (3~4단계)
     FCollisionBox OBB;                // Narrow Phase: ShapeCollision::BoxBox
     FAABB         Bounds;             // Broad Phase: Scene BVH Query
+
+    TArray<FVector> MeshVertices;                     // 잘라 낸 삼각형 목록 (월드 위치, 3개씩)
+    TUniquePtr<FVertexBuffer> MeshVertexBuffer;       // 위를 올린 GPU 버퍼
+    bool bMeshDirty = true;
 
 private:
     friend class FScene;

@@ -386,7 +386,7 @@ void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, 
 	LastMesh = nullptr;
 }
 
-// 데칼마다 Prepass에 깊이를 쓴 불투명 메시를 다시 그린다. 보간된 월드 위치가 박스 밖이면 셰이더가 버린다.
+// 데칼마다 받는 물체에서 박스 안만 잘라 낸 메시(SceneRenderer::BuildDecalReceivers)를 한 번에 그린다.
 void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants)
 {
 	RenderCommand::BindShaderProgram(DecalMeshShader);
@@ -394,49 +394,16 @@ void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Deca
 	RenderCommand::SetDepthStencilState(EDepthStencilState::DecalMeshTest);
 	RenderCommand::BindConstantBuffer(0, ViewCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
 
-	auto BindObject = [this](uint32 Slot, const FMatrix& World, const FMatrix& NormalMatrix)
-	{
-		if (bUsePerObjectSlots && Slot != InvalidObjectSlot)
-		{
-			RenderCommand::BindConstantBufferRange(2, PerObjectSlotCB.get(), Slot * PerObjectSlotConstants, PerObjectSlotConstants, EShaderBindFlagBits::Vertex);
-		}
-		else
-		{
-			RenderCommand::BindConstantBuffer(2, PerObjectCB.get(), EShaderBindFlagBits::Vertex);
-			UpdatePerObjectConstants(World, NormalMatrix);
-		}
-	};
-
-	// TODO: 지금은 데칼마다 받는 메시 전부를 그린다. BVH(Broad) + OBB-AABB SAT(Narrow)로 겹치는 메시만 고르기
 	for (const FDeferredDecalSceneProxy* Decal : Decals)
 	{
-		if (!Decal || !BindDecal(*Decal, View, Constants, Decal->DecalToWorld))
+		if (!Decal || !Decal->MeshVertexBuffer || Decal->MeshVertices.IsEmpty())
 			continue;
 
-		for (const FStaticDrawGroup* Group : StaticGroups)
-		{
-			if (!UsesDepthPrepass(Group->Material)) continue;
-			RenderCommand::BindMesh(Group->Mesh, Group->LODIndex);
-			for (const FStaticDrawItem& Item : Group->Items)
-			{
-				if (!Item.Proxy->ReceivesDecal()) continue;
+		if (!BindDecal(*Decal, View, Constants, Decal->DecalToWorld))
+			continue;
 
-				BindObject(Item.Slot, Item.Proxy->GetLocalToWorld(), Item.Proxy->GetNormalMatrix());
-				RenderCommand::DrawIndexed(Item.IndexCount, Item.StartIndex);
-			}
-		}
-
-		for (uint32 k = 0; k < FirstTranslucentIndex; ++k)
-		{
-			const FRenderPacket& Packet = RenderPackets[SortEntries[k].PacketIndex];
-			if (!UsesDepthPrepass(Packet.Material)) continue;
-
-			if (!Packet.Proxy || !Packet.Proxy->ReceivesDecal()) continue;
-
-			RenderCommand::BindMesh(Packet.Mesh, Packet.LODIndex);
-			BindObject(Packet.Slot, GetPacketWorld(Packet), GetPacketNormalMatrix(Packet));
-			RenderCommand::DrawIndexed(Packet.IndexCount ? Packet.IndexCount : Packet.Mesh->GetIndexBuffer(Packet.LODIndex)->GetIndexCount(), Packet.StartIndex);
-		}
+		RenderCommand::BindVertexBuffer(Decal->MeshVertexBuffer.get());
+		RenderCommand::Draw(Decal->MeshVertices.Num());
 	}
 
 	// 뒤따르는 불투명 패스가 처음부터 다시 바인딩하도록 기록을 비운다.
