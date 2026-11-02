@@ -204,7 +204,12 @@ void UBenchmarkEngine::InitEditorTools()
 // Outliner·Gizmo·Outline·Details의 선택 대상을 한 번에 맞춘다.
 void UBenchmarkEngine::SelectScene(USceneComponent* Root)
 {
-	Gizmo->SetTarget(Root);
+	Gizmo->SetTarget(nullptr);
+	SceneComponentGizmoTarget->SetComponent(Root);
+	if (Root)
+	{
+		Gizmo->SetTarget(SceneComponentGizmoTarget.get());
+	}
 
 	UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(Root);
 	if (!Primitive && Root && Root->GetOwner())
@@ -218,7 +223,7 @@ void UBenchmarkEngine::SelectScene(USceneComponent* Root)
 
 UPrimitiveComponent* UBenchmarkEngine::GetSelectedPrimitive() const
 {
-	return Gizmo ? Cast<UPrimitiveComponent>(Gizmo->GetTarget()) : nullptr;
+	return SceneComponentGizmoTarget ? Cast<UPrimitiveComponent>(SceneComponentGizmoTarget->GetComponent()) : nullptr;
 }
 
 // 선택된 물체 하나의 월드 AABB만 그린다. 컬링·피킹에 실제로 쓰는 프록시 바운드와 같다.
@@ -380,7 +385,7 @@ void UBenchmarkEngine::Tick(float DeltaTime)
 		if (Outline->GetTarget())
 			OutlineRenderer->OnRender(*Outline, ViewProjection, Viewport);
 
-		if (Gizmo->GetTarget())
+		if (Gizmo->HasValidTarget())
 		{
 			// 에디터와 같이 깊이를 비워 기즈모가 사과에 가려지지 않고 항상 위에 보이게 한다.
 			// 아웃라인(스텐실)은 이미 그렸고 이후 장면 패스가 없으므로 지워도 된다.

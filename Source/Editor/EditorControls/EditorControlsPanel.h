@@ -27,6 +27,7 @@ public:
 	inline void SetGizmo(FGizmo* InGizmo) { Gizmo = InGizmo; }
 	inline void SetWorld(UWorld* InWorld) { World = InWorld; }
 	inline void SetIsPlayingQuery(std::function<bool()> InQuery) { IsPlayingQuery = InQuery; }
+	inline void SetIsBoneGizmoQuery(std::function<bool()> InQuery) { IsBoneGizmoQuery = InQuery; }
 
 	float DeltaTime = 1.0f;
 	UWorld* World = nullptr; // SpawnActor MainCamera
@@ -69,5 +70,6 @@ private:
     void DrawCameraProperties();
     FViewportsPanel* ViewportsPanel = nullptr;
 	std::function<bool()> IsPlayingQuery;
+	std::function<bool()> IsBoneGizmoQuery;
 
 };

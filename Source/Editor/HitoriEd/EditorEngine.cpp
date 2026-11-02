@@ -110,6 +110,7 @@ bool UEditorEngine::Init()
 	GizmoRenderer->Init(Renderer);
 
 	Gizmo = MakeUnique<FGizmo>();
+	SceneComponentGizmoTarget = MakeUnique<FSceneComponentGizmoTarget>();
 
 	// Skybox·Fog·FXAA·Gamma는 Game과 공용인 파이프라인이 소유한다.
 	ScenePipeline.Init(Renderer);
@@ -135,6 +136,17 @@ bool UEditorEngine::Init()
 	EditorUI->SetOpenProjectSettingsCallback([this]() { ProjectSettingsPanel->Open(); });
 	DebugPanel = EditorUI->AddEditorPanel<FDebugPanel>();
 	ShadowAtlasPanel = EditorUI->AddEditorPanel<FShadowAtlasPanel>();
+	SkeletalMeshViewerPanel = EditorUI->AddEditorPanel<FSkeletalMeshViewerPanel>();
+	ContentDrawerPanel->SetSkeletalMeshOpenCallback([this](USkeletalMesh* SkeletalMesh)
+	{
+		SkeletalMeshViewerPanel->SetSkeletalMesh(SkeletalMesh);
+		SkeletalMeshViewerPanel->SetOpen(true);
+	});
+
+	FWorldContext& SkeletalMeshViewContext = CreateNewWorldContext(EWorldType::Editor);
+	SkeletalMeshViewContext.SetCurrentWorld(UWorld::CreateWorld(EWorldType::Editor, false, FName("SkeletalPreviewWorld")));
+	SkeletalPreviewWorld = SkeletalMeshViewContext.World();
+	SkeletalMeshViewerPanel->InitializeSkeletalPreview(SkeletalPreviewWorld);
 
 	//ToolbarPanel->SetPlayCallback([this]() { RequestPlaySession(); });
 	//ToolbarPanel->SetStopCallback([this]() { RequestEndPlayMap(); });
@@ -174,7 +186,7 @@ bool UEditorEngine::Init()
 	OutlinerPanel->SetSelectionCallback(
 		[this](USceneComponent* Root)
 		{
-			Gizmo->SetTarget(Root, true);
+			SetSceneGizmoTarget(Root, true);
 			DetailsPanel->SetTarget(Root ? Root->GetOwner() : nullptr);
 
 			UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(Root);
@@ -193,16 +205,16 @@ bool UEditorEngine::Init()
 				AActor* Owner = SceneComponent->GetOwner();
 				if (Owner && SceneComponent == Owner->GetRootComponent())
 				{
-					Gizmo->SetTarget(SceneComponent, true);
+					SetSceneGizmoTarget(SceneComponent, true);
 				}
 				else
 				{
-					Gizmo->SetTarget(SceneComponent);
+					SetSceneGizmoTarget(SceneComponent);
 				}
 			}
 			else
 			{
-				Gizmo->SetTarget(nullptr);
+				SetSceneGizmoTarget(nullptr);
 			}
 		}
 	);
@@ -234,6 +246,11 @@ bool UEditorEngine::Init()
 
 	EditorControlsPanel->SetWorld(GetActiveWorld());
 	EditorControlsPanel->SetIsPlayingQuery([this]() { return IsPlaying(); });
+	EditorControlsPanel->SetIsBoneGizmoQuery([this]()
+	{ 
+		return !SkeletalMeshViewerPanel->IsSkeletalPreviewHovered() 
+			&& !SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured(); 
+	});
 	EditorControlsPanel->SetGizmo(Gizmo.get());
 	EditorControlsPanel->SetViewportsPanel(ViewportsPanel);
 
@@ -499,6 +516,22 @@ void UEditorEngine::UpdateEditorViewportState(const float DeltaTime)
         Input.bEnabled = bEditorInputEnabled;
         ViewportsPanel->RouteInput(ActiveIndex, Input);
     }
+
+	SkeletalMeshViewerPanel->UpdateSkeletalPreviewInput();
+	SkeletalMeshViewerPanel->UpdateBoneGizmoInput(bEditorInputEnabled);
+	const bool bSkeletalPreviewWantInput = SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured()
+		|| SkeletalMeshViewerPanel->IsSkeletalPreviewHovered();
+	if (bSkeletalPreviewWantInput)
+	{
+		FViewportInput Input;
+		Input.DeltaTime = DeltaTime;
+		Input.WheelDelta = FInputSystem::GetWheelDelta();
+		Input.MoveSpeed = SettingsPanel->GetSettings().CameraSpeed;
+		Input.MouseSensitivity = SettingsPanel->GetSettings().MouseSensitivity;
+		Input.bEnabled = bEditorInputEnabled;
+		SkeletalMeshViewerPanel->RouteSkeletalPreviewInput(Input);
+	}
+
 	// 겹친 창은 Hover 선택에서 제외하고 우클릭 Capture를 우선한다.
 	if (ViewportsPanel->IsHovered() || ViewportsPanel->GetCapturedViewIndex() != FViewportsPanel::InvalidSlotIndex)
 		ViewportsPanel->SetEditorViewIndex(ViewportsPanel->GetActiveViewIndex());
@@ -534,6 +567,12 @@ void UEditorEngine::TickWorldAndEditor(const float DeltaTime)
 	//SCOPE_CYCLE_COUNTER(STAT_UpdateAllTransforms);
 	EditorWorld->GetScene().UpdateAllTransforms();
 
+	if (SkeletalPreviewWorld)
+	{
+		SkeletalPreviewWorld->Tick(DeltaTime);
+		SkeletalPreviewWorld->GetScene().UpdateAllTransforms();
+	}
+
 	// Tick 중에 바뀐 Scene을 렌더 전에 반영
 	// 실행 중에도 반영해야 BVH에 지워진 Proxy가 남지 않는다.
 	if (PlayWorld)
@@ -546,6 +585,11 @@ void UEditorEngine::RenderViewports()
     bPIEWindowRendered = false;
     const bool bRenderPIEWindow = IsPIEInWindow() && UpdatePIEWindowTargets();
     SceneRenderer.BeginFrame();
+
+	FViewport* SkeletalPreviewViewport = SkeletalMeshViewerPanel ? SkeletalMeshViewerPanel->GetSkeletalPreviewViewport() : nullptr;
+	FEditorViewportClient* SkeletalPreviewClient = SkeletalMeshViewerPanel ? SkeletalMeshViewerPanel->GetSkeletalPreviewClient() : nullptr;
+	const bool bRenderSkeletalPreview = SkeletalMeshViewerPanel && SkeletalMeshViewerPanel->CanRenderSkeletalPreview();
+
     SceneRenderer.SetShadowCullingSettings(SettingsPanel->GetSettings().ShadowCulling);
     // 쉐도우 맵은 World의 첫 View를 그릴 때 준비되므로, 그 전에 그림자를 쓰는 View를 모두 등록한다.
     for (int32 ViewIndex = 0; ViewIndex < ViewportsPanel->GetSlotCount(); ++ViewIndex)
@@ -564,6 +608,15 @@ void UEditorEngine::RenderViewports()
         if (ViewSupportsShadows(View))
             SceneRenderer.AddShadowView(*PIEViewport->GetActiveClient()->GetWorld(), View);
     }
+	if (bRenderSkeletalPreview)
+	{
+		const FSceneView SkeletalPreview = SkeletalPreviewViewport->CreateSceneView();
+		if (ViewSupportsShadows(SkeletalPreview))
+		{
+			SceneRenderer.AddShadowView(*SkeletalPreviewViewport->GetActiveClient()->GetWorld(), SkeletalPreview);
+		}
+	}
+
     for (int32 ViewIndex = 0; ViewIndex < ViewportsPanel->GetSlotCount(); ++ViewIndex)
     {
         FViewport& Viewport = *ViewportsPanel->GetViewport(ViewIndex);
@@ -593,6 +646,20 @@ void UEditorEngine::RenderViewports()
     }
     else if (PIEPanel)
         PIEViewport->ClearSceneData();
+
+	if (bRenderSkeletalPreview)
+	{
+		SkeletalPreviewViewport->ClearSceneData();
+		SkeletalPreviewViewport->EnsureRenderTargets();
+
+		const FSceneView SkeletalPreviewView = SkeletalPreviewViewport->CreateSceneView();
+		FSceneRenderData& SkeletalPreviewData = SkeletalPreviewViewport->GetSceneRenderData();
+
+		SceneRenderer.PrepareView(*SkeletalPreviewWorld, SkeletalPreviewView, SkeletalPreviewData);
+		RenderFrame(*SkeletalPreviewViewport, *SkeletalPreviewWorld, SkeletalPreviewView, nullptr);
+		SkeletalPreviewData.ReleaseSceneReferences();
+	}
+
     SceneRenderer.EndFrame();
 }
 
@@ -684,6 +751,9 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 	// 실행 중인 PIE View에는 Grid·Gizmo·Outline 같은 에디터 표시를 그리지 않는다.
 	// 별도 PIE 창은 편집 입력이 없으므로 일시정지 중에도 게임 화면만 보인다.
 	const bool bShowEditorOverlay = OverlayClient != nullptr;
+	const bool bShowSkeletalPreviewOverlay = SkeletalMeshViewerPanel 
+										&& SkeletalPreviewWorld 
+										&& &ViewWorld == SkeletalPreviewWorld;
 	FRenderingInfo PassInfo = ViewRenderingInfo;
 
 	for (FRenderingDesc& Color : PassInfo.ColorRenderTargets)
@@ -698,36 +768,46 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 
 	// 라인 배처는 매 프레임 한 번만 비우고 한 번만 그린다.
 	// 라이트 디버그 라인은 바운딩 박스 표시 여부와 무관하게 항상 그린다.
-	if (bShowEditorOverlay && !Settings.bDepthView)
+	if ((bShowEditorOverlay || bShowSkeletalPreviewOverlay) && !Settings.bDepthView)
 	{
 		LineBatcher->BeginFrame();
-		if (Settings.bDrawBoundingBox)
+
+		if (bShowEditorOverlay)
 		{
-			LineBatcher->BuildVertexBuffer(ViewWorld);
-		}
-		for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
-		{
-			if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
+			if (Settings.bDrawBoundingBox)
 			{
-				DirLight->DrawDebug(LineBatcher.get());
+				LineBatcher->BuildVertexBuffer(ViewWorld);
+			}
+			for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
+			{
+				if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
+				{
+					DirLight->DrawDebug(LineBatcher.get());
+				}
+			}
+			for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+			{
+				if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
+				{
+					SpotLight->DrawDebug(LineBatcher.get());
+				}
+			}
+			AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
+			for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
+			{
+				if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
+					continue;
+				if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
+					continue;
+				Shape->DrawDebug(LineBatcher.get());
 			}
 		}
-		for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+
+		if (bShowSkeletalPreviewOverlay)
 		{
-			if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
-			{
-				SpotLight->DrawDebug(LineBatcher.get());
-			}
+			SkeletalMeshViewerPanel->DrawBoneDebug(*LineBatcher);
 		}
-		AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
-		for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
-		{
-			if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
-				continue;
-			if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
-				continue;
-			Shape->DrawDebug(LineBatcher.get());
-		}
+
 		LineBatcher->OnRender(ViewProjection);
 	}
 
@@ -777,14 +857,23 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 		OutlineRenderer->OnRender(*Outline, ViewProjection, PassInfo.ViewportSetting);
 	}
 
-	if (bShowEditorOverlay && IsInViewWorld(Gizmo->GetTarget()))
+	if (bShowEditorOverlay && IsInViewWorld(SceneComponentGizmoTarget->GetComponent()))
 	{
 		//auto Target = Cast<UPrimitiveComponent>(Gizmo->GetTarget());
 		//FBox box = Target->CalcBounds();
 
 		RenderCommand::ClearDepthStencil(ViewRenderingInfo.DepthStencil.Texture);
-
 		GizmoRenderer->OnRender(*Gizmo, ViewProjection, ViewCameraLocation, View.IsOrthographic());
+	}
+
+	if (bShowSkeletalPreviewOverlay && !Settings.bDepthView)
+	{
+		FGizmo* BoneGizmo = SkeletalMeshViewerPanel->GetBoneGizmo();
+		if (BoneGizmo && BoneGizmo->HasValidTarget())
+		{
+			RenderCommand::ClearDepthStencil(ViewRenderingInfo.DepthStencil.Texture);
+			GizmoRenderer->OnRender(*BoneGizmo, ViewProjection, ViewCameraLocation, View.IsOrthographic());
+		}
 	}
 
 	RenderCommand::ClearDepthStencil(PassInfo.DepthStencil.Texture);
@@ -868,7 +957,7 @@ void UEditorEngine::UpdateGizmoAndPicking()
 
 	// 다른 월드의 선택 대상은 이 View에 Gizmo가 보이지 않으므로 조작하지 않는다.
 	UWorld* ViewWorld = Client->GetWorld();
-	const USceneComponent* GizmoTarget = Gizmo->GetTarget();
+	const USceneComponent* GizmoTarget = SceneComponentGizmoTarget->GetComponent();
 	const bool bGizmoInView = !GizmoTarget ||
 		(GizmoTarget->GetOwner() && GizmoTarget->GetOwner()->GetWorld() == ViewWorld);
 
@@ -1005,6 +1094,20 @@ void UEditorEngine::PreExit()
 	EndPlayMap();
 	DestroyPIEWindow();
 	SceneRenderer.EndFrame();
+
+	if (SkeletalMeshViewerPanel)
+	{
+		SkeletalMeshViewerPanel->ShutdownSkeletalPreview();
+	}
+	if (SkeletalPreviewWorld)
+	{
+		ReleaseWorldShadowResources(SkeletalPreviewWorld);
+		SkeletalPreviewWorld->ClearWorld();
+		DestroyWorldContext(SkeletalPreviewWorld);
+		delete SkeletalPreviewWorld;
+		SkeletalPreviewWorld = nullptr;
+	}
+
 	for (FWorldContext& Context : WorldList)
 		ReleaseWorldShadowResources(Context.World());
 	ViewportsPanel->Shutdown();
@@ -1382,4 +1485,15 @@ void UEditorEngine::ReleaseWorldShadowResources(UWorld* World)
     SceneRenderer.ReleaseWorldShadows(Context->ShadowResourceIndex);
     Renderer->ReleaseShadowResources(Context->ShadowResourceIndex);
     Context->ShadowResourceIndex = InvalidShadowResourceIndex;
+}
+
+void UEditorEngine::SetSceneGizmoTarget(USceneComponent* Component, bool bUseActorBounds)
+{
+	Gizmo->SetTarget(nullptr);
+	SceneComponentGizmoTarget->SetComponent(Component);
+
+	if (Component)
+	{
+		Gizmo->SetTarget(SceneComponentGizmoTarget.get(), bUseActorBounds);
+	}
 }

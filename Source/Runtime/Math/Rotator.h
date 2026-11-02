@@ -41,6 +41,8 @@ struct FRotator
 	{
 		return FRotator(Pitch * Scalar, Yaw * Scalar, Roll * Scalar);
 	}
+
+	static FRotator FindLookAtRotation(const FVector& From, const FVector& To);
 };
 
 FRotator operator+(FRotator Rot, const FVector& Vec);

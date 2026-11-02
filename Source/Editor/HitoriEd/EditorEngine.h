@@ -10,6 +10,7 @@
 #include "Editor/EditorUI/ImGuiRenderer.h"
 #include "Editor/Rendering/GridRenderer.h"
 #include "Editor/Gizmo/GizmoRenderer.h"
+#include "Editor/Gizmo/SceneComponentGizmoTarget.h"
 #include "Render/LineBatcher.h"
 #include "Render/DepthViewRenderer.h"
 #include "Render/ShadowCascadeDebugRenderer.h"
@@ -29,6 +30,7 @@
 #include "Editor/DebugTools/ShadowAtlasPanel.h"
 #include "Editor/Viewports/ViewportsPanel.h"
 #include "Editor/ContentDrawer/ContentDrawerPanel.h"
+#include "Editor/SkeletalMeshViewer/SkeletalMeshViewerPanel.h"
 
 
 #include "Editor/Rendering/Outline.h"
@@ -126,6 +128,7 @@ private:
 	//Depth Pass
 	void RenderDepthPass(const FRenderingInfo& ViewRenderingInfo, const FMatrix& ViewProjection, const FVector& ViewCameraLocation, const FVector& ViewCameraForward);
 
+	void SetSceneGizmoTarget(USceneComponent* Component, bool bUseActorBounds = false);
 
 
 	FWorldContext& GetEditorWorldContext();
@@ -170,9 +173,11 @@ private:
 	FOutlinerPanel* OutlinerPanel = nullptr;
 	FContentDrawerPanel* ContentDrawerPanel = nullptr;
 	FSequencerPanel* SequencerPanel = nullptr;
+	FSkeletalMeshViewerPanel* SkeletalMeshViewerPanel = nullptr;
 
 	UWorld* EditorWorld = nullptr;
 	UWorld* PlayWorld = nullptr;
+	UWorld* SkeletalPreviewWorld = nullptr;
 
 	// Play 버튼이 다음 세션을 띄울 위치
 	EPlayModeType PlayMode = EPlayModeType::InViewport;
@@ -207,4 +212,6 @@ private:
 	void OpenScene();
 	void SaveCurrentScene();
 	void SaveSceneAs();
+
+	TUniquePtr<FSceneComponentGizmoTarget> SceneComponentGizmoTarget;
 };

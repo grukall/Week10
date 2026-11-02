@@ -1,6 +1,7 @@
 #include "EnginePCH.h"
 #include "Editor/ContentDrawer/ContentDrawerPanel.h"
 #include "Asset/AssetManager.h"
+#include "Render/SkeletalMesh.h"
 #include "Text/Font.h"
 #include "Editor/HitoriEd/EditorDragDrop.h"
 #include "Editor/HitoriEd/EditorResourcePaths.h"
@@ -95,6 +96,7 @@ void FContentDrawerPanel::OnRender()
 				// 폴더/파일 아이콘은 끌 수 없어야 하므로 썸네일과 구분해서 들고 있는다.
 				UTexture2D* TextureAsset = nullptr;
 				UFont* FontAsset = nullptr;
+				USkeletalMesh* SkeletalMeshAsset = nullptr;
 
 				// 폴더 또는 파일 아이콘 표시
 				if (bIsDirectory)
@@ -103,6 +105,11 @@ void FContentDrawerPanel::OnRender()
 				}
 				else // 파일인 경우
 				{
+					if (Path.extension() == ".fbx")
+					{
+						const FString SkeletalMeshKey = fs::relative(Path, AssetRootPath).generic_string() + "#Group0";
+						SkeletalMeshAsset = UAssetManager::GetAssetByPath<USkeletalMesh>(SkeletalMeshKey);
+					}
 					URenderAsset* Asset = UAssetManager::GetAssetByPath<URenderAsset>(PathString);
 					if (Asset && Asset->IsA<UTexture2D>())
 					{
@@ -152,6 +159,10 @@ void FContentDrawerPanel::OnRender()
 					if (bIsDirectory)
 					{
 						CurrentPath /= Path.filename(); // 하위 폴더로 이동
+					}
+					else if (SkeletalMeshAsset && SkeletalMeshOpenCallback)
+					{
+						SkeletalMeshOpenCallback(SkeletalMeshAsset);
 					}
 				}
 				// 파일 이름 표시

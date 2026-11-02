@@ -6,6 +6,7 @@
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/Gizmo/Gizmo.h"
 #include "Editor/Gizmo/GizmoRenderer.h"
+#include "Editor/Gizmo/SceneComponentGizmoTarget.h"
 #include "Editor/Rendering/GridRenderer.h"
 #include "Editor/Rendering/Outline.h"
 #include "Editor/Rendering/OutLineRenderer.h"
@@ -75,4 +76,5 @@ private:
 	FOcclusionMeasureResult LastOcclusionMeasure;
 
 	UWorld* World;
+	TUniquePtr<FSceneComponentGizmoTarget> SceneComponentGizmoTarget;
 };

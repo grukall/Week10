@@ -21,7 +21,14 @@ bool FEditorControlsPanel::Init()
 void FEditorControlsPanel::Tick(float DeltaTime)
 {
 	if (ImGui::GetIO().WantTextInput)
+	{
 		return;
+	}
+
+	if (IsBoneGizmoQuery && !IsBoneGizmoQuery())
+	{
+		return;
+	}
 
 	if (Gizmo && FInputSystem::IsKeyPressed(EKeyCode::Space))
 	{

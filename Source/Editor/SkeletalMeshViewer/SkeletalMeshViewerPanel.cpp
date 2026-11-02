@@ -1,0 +1,767 @@
+#include "EnginePCH.h"
+#include "SkeletalMeshViewerPanel.h"
+
+#include "Camera/CameraComponent.h"
+#include "Engine/World.h"
+#include "Asset/AssetManager.h"
+#include "Component/BillboardComponent.h"
+#include "GameFramework/Actor/DirectionalLightActor.h"
+#include "GameFramework/Actor/AmbientLightActor.h"
+#include "GameFramework/Actor/StaticMeshActor.h"
+#include "Math/Rotator.h"
+#include "Input/InputSystem.h"
+#include "Render/LineBatcher.h"
+#include "Render/SkeletalMesh.h"
+#include "GameFramework/Actor.h"
+#include "Component/SkeletalMeshComponent.h"
+
+namespace
+{
+	bool IsFiniteVector(const FVector& Value)
+	{
+		return std::isfinite(Value.X)
+			&& std::isfinite(Value.Y)
+			&& std::isfinite(Value.Z);
+	}
+
+	bool IsValidEditableTransform(const FTransform& Transform)
+	{
+		return IsFiniteVector(Transform.Location)
+			&& std::isfinite(Transform.Rotation.Pitch)
+			&& std::isfinite(Transform.Rotation.Yaw)
+			&& std::isfinite(Transform.Rotation.Roll)
+			&& IsFiniteVector(Transform.Scale);
+	}
+
+	FTransform MatrixToTransform(const FMatrix& Matrix)
+	{
+		FTransform Transform;
+		Transform.Location = FVector(Matrix[3][0], Matrix[3][1], Matrix[3][2]);
+
+		FVector XAxis(Matrix[0][0], Matrix[0][1], Matrix[0][2]);
+		FVector YAxis(Matrix[1][0], Matrix[1][1], Matrix[1][2]);
+		FVector ZAxis(Matrix[2][0], Matrix[2][1], Matrix[2][2]);
+		Transform.Scale = FVector(XAxis.Size(), YAxis.Size(), ZAxis.Size());
+
+		FMatrix RotationMatrix = FMatrix::Identity;
+		RotationMatrix.SetAxis(0, XAxis.Normalized());
+		RotationMatrix.SetAxis(1, YAxis.Normalized());
+		RotationMatrix.SetAxis(2, ZAxis.Normalized());
+		Transform.Rotation = MatrixToRotator(RotationMatrix);
+		return Transform;
+	}
+
+	void AddWireCircle(FLineBatcher& LineBatcher, const FVector& Center, const FVector& AxisA, const FVector& AxisB, 
+		float Radius, int32 Segments, const FVector4& Color)
+	{
+		if (Radius <= 0.0f || Segments < 3)
+		{
+			return;
+		}
+
+		const float AngleStep = 2.0f * PI / static_cast<float>(Segments);
+
+		for (int32 SegmentIndex = 0; SegmentIndex < Segments; ++SegmentIndex)
+		{
+			const float CurrentAngle = AngleStep * static_cast<float>(SegmentIndex);
+			const float NextAngle = AngleStep * static_cast<float>(SegmentIndex + 1);
+
+			const FVector CurrentPoint = Center + (AxisA * std::cosf(CurrentAngle) + AxisB * std::sinf(CurrentAngle)) * Radius;
+			const FVector NextPoint = Center + (AxisA * std::cosf(NextAngle) + AxisB * std::sinf(NextAngle)) * Radius;
+
+			LineBatcher.AddLine(CurrentPoint, NextPoint, Color);
+		}
+	}
+
+	void AddWireSphere(FLineBatcher& LineBatcher, const FVector& Center, float Radius, int32 Segments, const FVector4& Color)
+	{
+		const FVector AxisX(1.0f, 0.0f, 0.0f);
+		const FVector AxisY(0.0f, 1.0f, 0.0f);
+		const FVector AxisZ(0.0f, 0.0f, 1.0f);
+		AddWireCircle(LineBatcher, Center, AxisX, AxisY, Radius, Segments, Color);
+		AddWireCircle(LineBatcher, Center, AxisX, AxisZ, Radius, Segments, Color);
+		AddWireCircle(LineBatcher, Center, AxisY, AxisZ, Radius, Segments, Color);
+	}
+}
+
+bool FSkeletalMeshViewerPanel::Init()
+{
+	BoneGizmo = MakeUnique<FGizmo>();
+	BoneGizmoTarget = MakeUnique<FBoneGizmoTarget>(this);
+	BoneGizmo->SetTarget(BoneGizmoTarget.get());
+	BoneGizmo->SetMode(EGizmoMode::Location);
+	BoneGizmo->SetSpace(EGizmoSpace::Local);
+
+	return true;
+}
+
+void FSkeletalMeshViewerPanel::Tick(float DeltaTime)
+{
+	if (bPoseDirty)
+	{
+		RebuildGlobalPose();
+	}
+}
+
+void FSkeletalMeshViewerPanel::OnRender()
+{
+	bool bOpen = true;
+	const bool bVisible = ImGui::Begin(GetPanelName(), &bOpen);
+
+	if (!bOpen)
+	{
+		SetOpen(false);
+		SkeletalPreviewScreenRect = {};
+	}
+
+	if (!bVisible)
+	{
+		SkeletalPreviewScreenRect = {};
+		if (SkeletalPreviewViewport)
+		{
+			SkeletalPreviewViewport->SetOutputSize(0, 0);
+		}
+		ImGui::End();
+		return;
+	}
+
+	const float BottomAreaHeight = 35.0f;
+	const ImGuiTableFlags TableFlags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
+
+	if (ImGui::BeginTable("##SkeletalMeshViewerLayout",
+		3, TableFlags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y - BottomAreaHeight)))
+	{
+		ImGui::TableSetupColumn("Bone Tree", ImGuiTableColumnFlags_WidthFixed, 240.0f);
+		ImGui::TableSetupColumn("Bone Transform", ImGuiTableColumnFlags_WidthFixed, 280.0f);
+		ImGui::TableSetupColumn("Preview", ImGuiTableColumnFlags_WidthStretch);
+
+		ImGui::TableNextColumn();
+		ImGui::TextUnformatted("Bone Hierarchy");
+		ImGui::Separator();
+		if (ImGui::BeginTabBar("##SkeletalMeshViewer"))
+		{
+			if (ImGui::BeginTabItem("Skeleton"))
+			{
+				if (RootBones.IsEmpty())
+				{
+					ImGui::TextDisabled("No root bone.");
+				}
+				else
+				{
+					for (int32 RootBoneIndex : RootBones)
+					{
+						DrawBoneNode(RootBoneIndex);
+					}
+				}
+				ImGui::EndTabItem();
+			}
+			ImGui::EndTabBar();
+		}
+
+		ImGui::TableNextColumn();
+		ImGui::TextUnformatted("Bone Transform");
+		ImGui::Separator();
+		if (!SkeletalMesh || !SkeletalMesh->MeshData.RefBones.IsValidIndex(SelectedBoneIndex))
+		{
+			ImGui::TextDisabled("No bone is selected.");
+		}
+		else
+		{
+			const FSkeletalMeshRefBone& SelectedBone = SkeletalMesh->MeshData.RefBones[SelectedBoneIndex];
+			FTransform EditedTransform = EditableLocalPose[SelectedBoneIndex];
+
+			const FString SelectedBoneName = SelectedBone.Name.ToString();
+			ImGui::Text("Name: %s", SelectedBoneName.c_str());
+			ImGui::Text("Index: %d", SelectedBoneIndex);
+			if (SkeletalMesh->MeshData.RefBones.IsValidIndex(SelectedBone.ParentIndex))
+			{
+				const FString ParentBoneName = SkeletalMesh->MeshData.RefBones[SelectedBone.ParentIndex].Name.ToString();
+				ImGui::Text("Parent: %s", ParentBoneName.c_str());
+			}
+			else
+			{
+				ImGui::TextUnformatted("Parent: None");
+			}
+
+			ImGui::Separator();
+			ImGui::TextDisabled("Transform");
+			bool bTransformChanged = false;
+
+			bTransformChanged |= ImGui::DragFloat3("Location", &EditedTransform.Location.X, 0.1f);
+			bTransformChanged |= ImGui::DragFloat3("Rotation", &EditedTransform.Rotation.Pitch, 0.1f);
+			bTransformChanged |= ImGui::DragFloat3("Scale", &EditedTransform.Scale.X, 0.01f, 0.001f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+			if (bTransformChanged && IsValidEditableTransform(EditedTransform))
+			{
+				EditableLocalPose[SelectedBoneIndex] = EditedTransform;
+				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
+			}
+
+			if (ImGui::Button("Reset Bone"))
+			{
+				EditableLocalPose[SelectedBoneIndex] = MatrixToTransform(SelectedBone.RefLocalMatrix);
+				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Reset All"))
+			{
+				for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+				{
+					EditableLocalPose[BoneIndex] = MatrixToTransform(SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix);
+				}
+				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
+			}
+			
+			if (GlobalPose.IsValidIndex(SelectedBoneIndex))
+			{
+				const FMatrix& GlobalMatrix = GlobalPose[SelectedBoneIndex];
+				ImGui::Separator();
+				ImGui::TextDisabled("Global Location");
+				ImGui::Text("X %.2f  Y %.2f  Z %.2f", GlobalMatrix[3][0], GlobalMatrix[3][1], GlobalMatrix[3][2]);
+			}
+		}
+
+		ImGui::TableNextColumn();
+		ImGui::TextUnformatted("Preview Viewport");
+		ImGui::Separator();
+		ImVec2 PreviewSize = ImGui::GetContentRegionAvail();
+		PreviewSize.x = std::max(0.0f, PreviewSize.x);
+		PreviewSize.y = std::max(0.0f, PreviewSize.y);
+		const uint32 PreviewWidth = static_cast<uint32>(std::floor(PreviewSize.x));
+		const uint32 PreviewHeight = static_cast<uint32>(std::floor(PreviewSize.y));
+		if (SkeletalPreviewViewport)
+		{
+			SkeletalPreviewViewport->SetOutputSize(PreviewWidth, PreviewHeight);
+		}
+		if (SkeletalPreviewViewport && SkeletalPreviewViewport->GetColorTarget() && PreviewWidth > 0 && PreviewHeight > 0)
+		{
+			const ImVec2 PreviewMin = ImGui::GetCursorScreenPos();
+			SkeletalPreviewScreenRect = { PreviewMin.x, PreviewMin.y, PreviewSize.x, PreviewSize.y };
+
+			ImGui::Image((ImTextureID)SkeletalPreviewViewport->GetColorTarget()->GetSRV(), PreviewSize);
+		}
+		else
+		{
+			ImGui::Dummy(PreviewSize);
+		}
+
+		ImGui::EndTable();
+	}
+	ImGui::End();
+}
+
+void FSkeletalMeshViewerPanel::BuildBoneHierarchy()
+{
+	BoneChildren.Reset();
+	RootBones.Reset();
+	BoneChildren.SetNum(SkeletalMesh->MeshData.RefBones.Num());
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+	{
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
+		if (ParentIndex < 0)
+		{
+			RootBones.Add(BoneIndex);
+			continue;
+		}
+		if (SkeletalMesh->MeshData.RefBones.IsValidIndex(ParentIndex))
+		{
+			BoneChildren[ParentIndex].Add(BoneIndex);
+		}
+	}
+}
+
+void FSkeletalMeshViewerPanel::DrawBoneNode(int32 BoneIndex)
+{
+	if (!SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex))
+		return;
+	const FSkeletalMeshRefBone& Bone = SkeletalMesh->MeshData.RefBones[BoneIndex];
+	const bool bHasChildren = !BoneChildren[BoneIndex].IsEmpty();
+
+	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
+	if (SelectedBoneIndex == BoneIndex)
+	{
+		Flags |= ImGuiTreeNodeFlags_Selected;
+	}
+	if (Bone.ParentIndex < 0)
+	{
+		Flags |= ImGuiTreeNodeFlags_DefaultOpen;
+	}
+	if (!bHasChildren)
+	{
+		Flags |= ImGuiTreeNodeFlags_Leaf;
+		Flags |= ImGuiTreeNodeFlags_NoTreePushOnOpen;
+	}
+
+	ImGui::PushID(BoneIndex);
+	const FString BoneName = Bone.Name.ToString();
+	const bool bOpen = ImGui::TreeNodeEx("##BoneNode", Flags, "%s", BoneName.c_str());
+	if (ImGui::IsItemClicked())
+	{
+		SelectedBoneIndex = BoneIndex;
+	}
+
+	if (bOpen && bHasChildren)
+	{
+		for (int32 ChildIndex : BoneChildren[BoneIndex])
+		{
+			DrawBoneNode(ChildIndex);
+		}
+		ImGui::TreePop();
+	}
+	ImGui::PopID();
+}
+
+bool FSkeletalMeshViewerPanel::InitializeSkeletalPreview(UWorld* InSkeletalMeshWorld)
+{
+	if (!InSkeletalMeshWorld || !InSkeletalMeshWorld->GetMainCamera())
+	{
+		return false;
+	}
+
+	SkeletalPreviewWorld = InSkeletalMeshWorld;
+	CreateDefaultSkeletalPreviewScene();
+	SkeletalPreviewViewport = MakeUnique<FViewport>();
+	TUniquePtr<FEditorViewportClient> Client = MakeUnique<FEditorViewportClient>();
+
+	SkeletalPreviewClient = Client.get();
+	SkeletalPreviewClient->SetWorld(SkeletalPreviewWorld);
+
+	SkeletalPreviewClient->InitializeCamera(*SkeletalPreviewWorld->GetMainCamera()->GetCameraComponent(), 0, FVector2(1.0f, 1.0f));
+	FEditorCameraState Camera = SkeletalPreviewClient->GetCamera();
+	Camera.Location = FVector(-5.0f, 0.0f, 2.5f);
+	const FVector Target(0.0f, 0.0f, 1.5f);
+	Camera.Rotation = FRotator::FindLookAtRotation(Camera.Location, Target).Quaternion();
+	SkeletalPreviewClient->SetCamera(Camera, FVector2(1.0f, 1.0f));
+
+	SkeletalPreviewViewport->SetEditorClient(std::move(Client));
+	return true;
+}
+
+void FSkeletalMeshViewerPanel::ShutdownSkeletalPreview()
+{
+	SkeletalPreviewFloor = nullptr;
+	SkeletalPreviewDirectionalLight = nullptr;
+	SkeletalPreviewAmbientLight = nullptr;
+	SkeletalPreviewClient = nullptr;
+	SkeletalPreviewViewport.reset();
+	SkeletalPreviewWorld = nullptr;
+
+	if (BoneGizmo)
+	{
+		BoneGizmo->SetTarget(nullptr);
+	}
+	if (BoneGizmoTarget)
+	{
+		BoneGizmoTarget->SetViewer(nullptr);
+	}
+	BoneGizmoTarget.reset();
+	BoneGizmo.reset();
+}
+
+
+bool FSkeletalMeshViewerPanel::CanRenderSkeletalPreview() const
+{
+	return IsOpen() 
+		&& SkeletalPreviewWorld && SkeletalPreviewViewport && SkeletalPreviewClient 
+		&& SkeletalPreviewViewport->IsVisible() 
+		&& SkeletalPreviewClient->HasCamera();
+}
+
+void FSkeletalMeshViewerPanel::CreateDefaultSkeletalPreviewScene()
+{
+	if (!SkeletalPreviewWorld)
+	{
+		return;
+	}
+
+	SkeletalPreviewActor = SkeletalPreviewWorld->SpawnActor<AActor>(FName("SkeletalPreviewActor"));
+	SkeletalPreviewComponent = 
+		Cast<USkeletalMeshComponent>(SkeletalPreviewActor->AddComponent(USkeletalMeshComponent::StaticClass(), FName("SkeletalPreviewComponent")));
+	
+	UStaticMesh* PlaneMesh = UAssetManager::GetAssetByPath<UStaticMesh>("Plane");
+	if (PlaneMesh)
+	{
+		SkeletalPreviewFloor = SkeletalPreviewWorld->SpawnActor<AStaticMeshActor>(FName("SkeletalPreviewFloor"));
+		SkeletalPreviewFloor->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
+		SkeletalPreviewFloor->GetStaticMeshComponent()->SetCastShadow(false);
+		SkeletalPreviewFloor->GetStaticMeshComponent()->SetReceiveShadow(true);
+		SkeletalPreviewFloor->GetRootComponent()->SetRelativeLocation(FVector(0.0f, 0.0f, 0.0f));
+		SkeletalPreviewFloor->GetRootComponent()->SetRelativeScale3D(FVector(40.0f, 40.0f, 1.0f));
+	}
+
+	SkeletalPreviewDirectionalLight = SkeletalPreviewWorld->SpawnActor<ADirectionalLightActor>(FName("SkeletalPreviewDirectionalLight"));
+	SkeletalPreviewDirectionalLight->GetRootComponent()->SetRelativeRotation(FRotator(45.0f, -45.0f, 0.0f));
+	SkeletalPreviewDirectionalLight->GetLightComponent()->SetIntensity(1.5f);
+	SkeletalPreviewDirectionalLight->GetLightComponent()->SetCastShadow(false);
+	for (UActorComponent* Component : SkeletalPreviewDirectionalLight->GetComponents())
+	{
+		if (UBillboardComponent* Billboard = Cast<UBillboardComponent>(Component)) Billboard->SetVisible(false);
+	}
+
+	SkeletalPreviewAmbientLight = SkeletalPreviewWorld->SpawnActor<AAmbientLightActor>(FName("SkeletalPreviewAmbientLight"));
+	SkeletalPreviewAmbientLight->GetLightComponent()->SetIntensity(0.2f);
+	for (UActorComponent* Component : SkeletalPreviewAmbientLight->GetComponents())
+	{
+		if (UBillboardComponent* Billboard = Cast<UBillboardComponent>(Component)) Billboard->SetVisible(false);
+	}
+}
+
+bool FSkeletalMeshViewerPanel::IsSkeletalPreviewHovered() const
+{
+	POINT Mouse{};
+	if (!::GetCursorPos(&Mouse) || !SkeletalPreviewScreenRect.IsValid())
+	{
+		return false;
+	}
+
+	return Mouse.x >= SkeletalPreviewScreenRect.X 
+		&& Mouse.x < SkeletalPreviewScreenRect.X + SkeletalPreviewScreenRect.Width 
+		&& Mouse.y >= SkeletalPreviewScreenRect.Y 
+		&& Mouse.y < SkeletalPreviewScreenRect.Y + SkeletalPreviewScreenRect.Height;
+}
+
+bool FSkeletalMeshViewerPanel::IsSkeletalPreviewCaptured() const
+{
+	return bSkeletalPreviewCaptured;
+}
+
+void FSkeletalMeshViewerPanel::UpdateSkeletalPreviewInput()
+{
+	if (!FInputSystem::IsMouseDown(EMouseButton::Right))
+	{
+		bSkeletalPreviewCaptured = false;
+	}
+
+	if (!bSkeletalPreviewCaptured
+		&& IsSkeletalPreviewHovered()
+		&& FInputSystem::IsMouseDown(EMouseButton::Right))
+	{
+		bSkeletalPreviewCaptured = true;
+	}
+
+}
+
+void FSkeletalMeshViewerPanel::RouteSkeletalPreviewInput(FViewportInput Input)
+{
+	if (!SkeletalPreviewViewport)
+	{
+		return;
+	}
+	
+	POINT Mouse{};
+	::GetCursorPos(&Mouse);
+
+	Input.bCaptured = bSkeletalPreviewCaptured;
+	Input.bPointerOver = IsSkeletalPreviewHovered();
+	Input.MousePosition = 
+		{ static_cast<float>(Mouse.x) - SkeletalPreviewScreenRect.X, 
+		static_cast<float>(Mouse.y) - SkeletalPreviewScreenRect.Y };
+	SkeletalPreviewViewport->UpdateInput(Input);
+}
+
+void FSkeletalMeshViewerPanel::ReleaseSkeletalPreviewInput()
+{
+	bSkeletalPreviewCaptured = false;
+
+	if (SkeletalPreviewViewport)
+	{
+		SkeletalPreviewViewport->UpdateInput({});
+	}
+
+	if (BoneGizmo && BoneGizmo->IsUsing())
+	{
+		BoneGizmo->EndDrag();
+	}
+}
+
+void FSkeletalMeshViewerPanel::RebuildGlobalPose()
+{
+	if (!SkeletalMesh)
+	{
+		return;
+	}
+	if (EditableLocalPose.Num() != SkeletalMesh->MeshData.RefBones.Num())
+	{
+		GlobalPose.Reset();
+		bPoseDirty = false;
+		return;
+	}
+
+	GlobalPose.SetNum(SkeletalMesh->MeshData.RefBones.Num());
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+	{
+		const FMatrix LocalMatrix = EditableLocalPose[BoneIndex].GetLocalMatrix();
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
+		if (GlobalPose.IsValidIndex(ParentIndex) && ParentIndex < BoneIndex)
+		{
+			GlobalPose[BoneIndex] = LocalMatrix * GlobalPose[ParentIndex];
+		}
+		else
+		{
+			GlobalPose[BoneIndex] = LocalMatrix;
+		}
+
+	}
+
+	TArray<FMatrix> LocalPoseMatrices;
+	LocalPoseMatrices.Reserve(EditableLocalPose.Num());
+
+	for (const FTransform& LocalTransform : EditableLocalPose)
+	{
+		LocalPoseMatrices.Add(LocalTransform.GetLocalMatrix());
+	}
+	SkeletalPreviewComponent->SetSkeletalMeshPose(LocalPoseMatrices);
+	bPoseDirty = false;
+}
+
+
+void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
+{
+	if (!SkeletalMesh || GlobalPose.Num() != SkeletalMesh->MeshData.RefBones.Num())
+	{
+		return;
+	}
+
+	constexpr float BoneRadius = 0.05f;
+	constexpr int32 SphereSegments = 16;
+
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+	{
+		const FVector BonePosition = GetBoneGlobalPosition(BoneIndex);
+		if (!GlobalPose.IsValidIndex(BoneIndex) || !IsFiniteVector(BonePosition))
+		{
+			continue;
+		}
+
+		const bool bJointSelected = BoneIndex == SelectedBoneIndex;
+		const FVector4 JointColor = bJointSelected
+			? FVector4(1.0f, 0.8f, 0.1f, 1.0f)
+			: FVector4(0.5f, 0.8f, 1.0f, 1.0f);
+		AddWireSphere(LineBatcher, BonePosition, BoneRadius, SphereSegments, JointColor);
+
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
+		const FVector ParentPosition = GetBoneGlobalPosition(ParentIndex);
+		if (!GlobalPose.IsValidIndex(ParentIndex) || !IsFiniteVector(ParentPosition))
+		{
+			continue;
+		}
+
+		const bool bBoneSelected = ParentIndex == SelectedBoneIndex;
+		const FVector4 BoneColor = bBoneSelected
+			? FVector4(1.0f, 0.8f, 0.1f, 1.0f)
+			: FVector4(0.5f, 0.8f, 1.0f, 1.0f);
+
+		const FVector BoneVector = BonePosition - ParentPosition;
+		const float BoneLength = BoneVector.Size();
+		const FVector BoneDirection = BoneVector / BoneLength;
+
+		const FVector ReferenceAxis = std::abs(BoneDirection.Z) < 0.99f ? FVector(0.0f, 0.0f, 1.0f) : FVector(0.0f, 1.0f, 0.0f);
+		const FVector BasisAxisA = FVector::Cross(ReferenceAxis, BoneDirection).GetSafeNormal();
+		const FVector BasisAxisB = FVector::Cross(BoneDirection, BasisAxisA).GetSafeNormal();
+
+		const FVector Corners[4] =
+		{
+			ParentPosition + BasisAxisA * BoneRadius,
+			ParentPosition + BasisAxisB * BoneRadius,
+			ParentPosition - BasisAxisA * BoneRadius,
+			ParentPosition - BasisAxisB * BoneRadius
+		};
+
+		for (int32 CornerIndex = 0; CornerIndex < 4; ++CornerIndex)
+		{
+			LineBatcher.AddLine(Corners[CornerIndex], BonePosition, BoneColor);
+		}
+	}
+}
+
+
+FVector FSkeletalMeshViewerPanel::GetBoneGlobalPosition(int32 BoneIndex) const
+{
+	if (!GlobalPose.IsValidIndex(BoneIndex))
+	{
+		return FVector::ZeroVector;
+	}
+
+	const FMatrix& GlobalMatrix = GlobalPose[BoneIndex];
+	float GlobalTranslationX = GlobalMatrix[3][0];
+	float GlobalTranslationY = GlobalMatrix[3][1];
+	float GlobalTranslationZ = GlobalMatrix[3][2];
+
+	return FVector{ GlobalTranslationX, GlobalTranslationY, GlobalTranslationZ };
+}
+
+bool FSkeletalMeshViewerPanel::IsBoneValid(int32 BoneIndex) const
+{
+	return SkeletalMesh && SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex)
+		&& EditableLocalPose.IsValidIndex(BoneIndex) 
+		&& GlobalPose.IsValidIndex(BoneIndex);
+}
+
+int32 FSkeletalMeshViewerPanel::GetBoneParentIndex(int32 BoneIndex) const
+{
+	return SkeletalMesh && SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex)
+		? SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex
+		: -1;
+}
+
+FTransform FSkeletalMeshViewerPanel::GetBoneLocalTransform(int32 BoneIndex) const
+{
+	return EditableLocalPose.IsValidIndex(BoneIndex) 
+		? EditableLocalPose[BoneIndex] 
+		: FTransform::Identity;
+}
+
+FMatrix FSkeletalMeshViewerPanel::GetBoneGlobalMatrix(int32 BoneIndex) const
+{
+	return GlobalPose.IsValidIndex(BoneIndex) 
+		? GlobalPose[BoneIndex] 
+		: FMatrix::Identity;
+}
+
+void FSkeletalMeshViewerPanel::SetBoneLocalTransform(int32 BoneIndex, const FTransform& Transform)
+{
+	if (!EditableLocalPose.IsValidIndex(BoneIndex) || !IsValidEditableTransform(Transform))
+	{
+		return;
+	}
+	EditableLocalPose[BoneIndex] = Transform;
+	bPoseDirty = true;
+}
+
+void FSkeletalMeshViewerPanel::UpdateBoneGizmoInput(bool bInputEnabled)
+{
+	if (!BoneGizmo)
+	{
+		return;
+	}
+	if (!bInputEnabled || !CanRenderSkeletalPreview())
+	{
+		BoneGizmo->EndDrag();
+		return;
+	}
+
+	const bool bCanInteract = IsSkeletalPreviewHovered() || BoneGizmo->IsUsing();
+	if (!bCanInteract)
+	{
+		BoneGizmo->EndDrag();
+		return;
+	}
+
+	if (!BoneGizmo->IsUsing() && FInputSystem::IsKeyPressed(EKeyCode::Space))
+	{
+		const int NextMode = (static_cast<int>(BoneGizmo->GetMode()) + 1) % 3;
+		BoneGizmo->SetMode(static_cast<EGizmoMode>(NextMode));
+	}
+
+	POINT Mouse{};
+	if (!SkeletalPreviewScreenRect.IsValid() || !::GetCursorPos(&Mouse))
+	{
+		BoneGizmo->EndDrag();
+		return;
+	}
+
+	const FVector2 PreviewMousePosition(
+		static_cast<float>(Mouse.x) - SkeletalPreviewScreenRect.X,
+		static_cast<float>(Mouse.y) - SkeletalPreviewScreenRect.Y);
+
+	const FSceneView View = SkeletalPreviewViewport->CreateSceneView();
+	const FRect& ViewRect = View.ViewRect;
+	if (ViewRect.Width <= 0.0f || ViewRect.Height <= 0.0f)
+	{
+		return;
+	}
+
+	const FRay MouseRay = View.Deproject(PreviewMousePosition);
+	const bool bLeftMousePressed = FInputSystem::IsMousePressed(EMouseButton::Left);
+	BoneGizmo->Update(MouseRay, PreviewMousePosition, View.ViewProjection, static_cast<int>(ViewRect.Width), static_cast<int>(ViewRect.Height),
+		FInputSystem::IsMouseDown(EMouseButton::Left), View.GetCameraLocation(), View.IsOrthographic());
+
+	const bool bGizmoBlocksPick = BoneGizmo->IsUsing() || BoneGizmo->GetHoveredAxis() >= 0;
+	if (bLeftMousePressed && !bGizmoBlocksPick)
+	{
+		const int32 PickedBoneIndex = PickBone(PreviewMousePosition, View.ViewProjection, 
+			static_cast<int32>(ViewRect.Width), static_cast<int32>(ViewRect.Height));
+		SelectedBoneIndex = PickedBoneIndex;
+	}
+}
+
+int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const
+{
+	if (!SkeletalMesh)
+	{
+		return -1;
+	}
+	constexpr float PickBoneRadius = 7.0f;
+	constexpr float PickjointRadius = 15.0f;
+	int32 PickedBoneIndex = -1;
+	float NearestDistance = PickjointRadius;
+
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+	{
+		const FVector2 JointScreenPosition = WorldToScreen(GetBoneGlobalPosition(BoneIndex), ViewProjection, ScreenWidth, ScreenHeight);
+		const FVector2 Difference = MousePosition - JointScreenPosition;
+		const float Distance = sqrtf(Difference.X * Difference.X + Difference.Y * Difference.Y);
+		if (Distance < NearestDistance)
+		{
+			NearestDistance = Distance;
+			PickedBoneIndex = BoneIndex;
+		}
+	}
+	if (PickedBoneIndex >= 0)
+	{
+		return PickedBoneIndex;
+	}
+
+	NearestDistance = PickBoneRadius;
+
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+	{
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
+		if (ParentIndex < 0)
+		{
+			continue;
+		}
+
+		const FVector2 ParentScreenPosition = WorldToScreen(GetBoneGlobalPosition(ParentIndex), ViewProjection, ScreenWidth, ScreenHeight);
+		const FVector2 BoneScreenPosition = WorldToScreen(GetBoneGlobalPosition(BoneIndex), ViewProjection, ScreenWidth, ScreenHeight);
+
+		const float Distance = DistanceToSegment(MousePosition, ParentScreenPosition, BoneScreenPosition);
+		if (Distance < NearestDistance)
+		{
+			NearestDistance = Distance;
+			PickedBoneIndex = BoneIndex;
+		}
+	}
+	return PickedBoneIndex;
+}
+void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
+{
+	SkeletalMesh = InSkeletalMesh;
+	SkeletalPreviewComponent->SetSkeletalMeshData(&SkeletalMesh->MeshData);
+	EditableLocalPose.Reset();
+	GlobalPose.Reset();
+	SelectedBoneIndex = -1;
+
+	for (const FSkeletalMeshRefBone& Bone : SkeletalMesh->MeshData.RefBones)
+	{
+		EditableLocalPose.Add(MatrixToTransform(Bone.RefLocalMatrix));
+	}
+
+	BuildBoneHierarchy();
+	if (!RootBones.IsEmpty())
+	{
+		SelectedBoneIndex = RootBones[0];
+	}
+	bPoseDirty = true;
+}
+
+void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh()
+{
+	if (bPoseDirty)
+	{
+		RebuildGlobalPose();
+	}
+	SkeletalPreviewComponent->RefreshMesh();
+}
