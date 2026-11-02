@@ -437,6 +437,20 @@ void FViewportsPanel::DrawStatOverlay(ImDrawList* DrawList, const ImVec2& ViewMi
 		Lines.Add({std::format("  Process {:.2f} MB", static_cast<double>(FStatOverlay::GetProcessWorkingSetBytes()) / BytesPerMegabyte), ValueColor});
 	}
 
+	if (FStatOverlay::IsEnabled(EStatFlags::Decal))
+	{
+		const FDecalStats& Decal = FDecalStats::Get();
+		Lines.Add({std::format("Decal ({})", Decal.bMeshMethod ? "Mesh" : "Deferred"), TitleColor});
+		Lines.Add({std::format("  Drawn {} / {} (draw calls {})", Decal.DrawnDecals, Decal.TotalDecals, Decal.DrawnDecals), ValueColor});
+		if (Decal.bMeshMethod)
+		{
+			Lines.Add({std::format("  Mesh triangles {}", Decal.DrawnTriangles), ValueColor});
+			Lines.Add({std::format("  Last build: {} decals, {:.3f} ms", Decal.RebuiltDecals, Decal.BuildMs), ValueColor});
+			Lines.Add({std::format("    Receivers {}", Decal.Receivers), ValueColor});
+			Lines.Add({std::format("    Tris BVH {} -> SAT {} -> Clip {}", Decal.TrianglesTested, Decal.TrianglesPassedSAT, Decal.TrianglesClipped), ValueColor});
+		}
+	}
+
 	struct FProfileStatLine
 	{
 		FString Text;

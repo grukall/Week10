@@ -9,6 +9,7 @@
 #include "Engine/LightSceneProxy.h"
 #include "Camera/CameraProjection.h"
 #include "Core/Stats/LightweightStats.h"
+#include "Core/StatOverlay.h"
 #include "Render/DeferredDecalSceneProxy.h"
 #include "Render/RenderCommand.h"
 #include "Render/Buffer.h"
@@ -708,11 +709,16 @@ namespace
 
 void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDeferredDecalSceneProxy*>& Decals)
 {
+	// stat decal 빌드 수치. 다시 만든 데칼이 없으면 지난 빌드 결과를 그대로 둔다
+	const uint64 StartCycles = FPlatformTime::GetCycles64();
+	FDecalStats Build;
+
 	for (FDeferredDecalSceneProxy* Decal : Decals)
 	{
 		// 뷰포트마다 불리므로 박스나 받는 물체가 바뀐 데칼만 다시 만든다
 		if (!Decal || !Decal->bVisible || !Decal->bMeshDirty) continue;
 		Decal->bMeshDirty = false;
+		++Build.RebuiltDecals;
 		Decal->MeshVertices.Reset();
 
 		// 잘라 낸 삼각형을 데칼 공간에 모은 뒤 마지막에 월드로 되돌린다
@@ -745,6 +751,7 @@ void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDefe
 					bHasOpaque = Material && Material->BlendState == EBlendState::Opaque;
 				}
 				if (!bHasOpaque) return;
+				++Build.Receivers;
 
 				//2. Narrow phase
                 //2.1 Decal OBB를 Mesh Local 영역 AABB로 변경
@@ -784,12 +791,16 @@ void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDefe
 							LocalToDecal.TransformPosition(Tri.V0),
 							LocalToDecal.TransformPosition(Tri.V0 + Tri.Edge1),
 							LocalToDecal.TransformPosition(Tri.V0 + Tri.Edge2) };
+						++Build.TrianglesTested;
 						if (!TriangleIntersectsUnitBox(V)) return;
+						++Build.TrianglesPassedSAT;
 
                         //3. Clip: 박스 6면으로 잘라 남은 삼각형을 DecalSpaceVertices에 3개씩 붙인다
 						TriangleClipingInUnitBox(V, DecalSpaceVertices);
                     });
 			});
+
+		Build.TrianglesClipped += static_cast<uint32>(DecalSpaceVertices.Num() / 3);
 
 		// 데칼 공간 → 월드. 셰이더는 ViewProjection만 곱하고 UV는 ShadeDecal이 월드 위치로 계산한다
 		Decal->MeshVertices.Reserve(DecalSpaceVertices.Num());
@@ -802,6 +813,17 @@ void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDefe
 			Decal->MeshVertexBuffer = RenderCommand::CreateStaticVertexBuffer(Decal->MeshVertices.GetData(),
 				static_cast<uint32>(Decal->MeshVertices.Num() * sizeof(FVector)), sizeof(FVector));
 		}
+	}
+
+	if (Build.RebuiltDecals > 0)
+	{
+		FDecalStats& Stats = FDecalStats::Get();
+		Stats.RebuiltDecals = Build.RebuiltDecals;
+		Stats.Receivers = Build.Receivers;
+		Stats.TrianglesTested = Build.TrianglesTested;
+		Stats.TrianglesPassedSAT = Build.TrianglesPassedSAT;
+		Stats.TrianglesClipped = Build.TrianglesClipped;
+		Stats.BuildMs = FPlatformTime::ToMilliseconds64(FPlatformTime::GetCycles64() - StartCycles);
 	}
 }
 

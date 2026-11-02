@@ -9,6 +9,7 @@
 
 #include "Core/EngineTimer.h"
 #include "Core/Stats/LightweightStats.h"
+#include "Core/StatOverlay.h"
 
 #include "Engine/PrimitiveSceneProxy.h"
 #include "DeferredDecalSceneProxy.h"
@@ -313,6 +314,13 @@ void FRenderer::RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, con
 
 void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method)
 {
+	// stat decal 그리기 수치는 뷰마다 새로 센다
+	FDecalStats& Stats = FDecalStats::Get();
+	Stats.bMeshMethod = Method == EDecalMethod::Mesh;
+	Stats.TotalDecals = static_cast<uint32>(Decals.Num());
+	Stats.DrawnDecals = 0;
+	Stats.DrawnTriangles = 0;
+
 	if (Decals.Num() == 0)
 		return;
 
@@ -381,6 +389,7 @@ void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, 
 		if (!Decal || !BindDecal(*Decal, View, Constants, UnitBoxScale * Decal->DecalToWorld))
 			continue;
 		RenderCommand::DrawIndexed(BoxIndexCount);
+		++FDecalStats::Get().DrawnDecals;
 	}
 
 	LastMesh = nullptr;
@@ -404,6 +413,10 @@ void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Deca
 
 		RenderCommand::BindVertexBuffer(Decal->MeshVertexBuffer.get());
 		RenderCommand::Draw(Decal->MeshVertices.Num());
+
+		FDecalStats& Stats = FDecalStats::Get();
+		++Stats.DrawnDecals;
+		Stats.DrawnTriangles += static_cast<uint32>(Decal->MeshVertices.Num() / 3);
 	}
 
 	// 뒤따르는 불투명 패스가 처음부터 다시 바인딩하도록 기록을 비운다.
