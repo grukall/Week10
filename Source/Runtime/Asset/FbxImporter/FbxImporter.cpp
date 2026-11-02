@@ -1291,6 +1291,17 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
     // 엔진 기준으로 변환한 뒤 데이터를 추출한다.
     NormalizeScene(Scene);
 
+    // Wedge와 Polygon을 추출하기 전에 FBX 메시를 삼각형화한다.
+    FbxGeometryConverter GeometryConverter(Manager);
+    if (!GeometryConverter.Triangulate(Scene, true))
+    {
+        HTR_LOG(Error, "[FBX] Triangulation failed: {}", Path);
+        Manager->Destroy();
+        return false;
+    }
+
+    HTR_LOG(Info, "[FBX] Triangulated: {}", Path);
+
     FbxNode* RootNode = Scene->GetRootNode();
     TArray<FFbxSkeletalMeshGroup> Groups;
     CollectSkeletalMeshGroups(RootNode, RootNode, Groups);
