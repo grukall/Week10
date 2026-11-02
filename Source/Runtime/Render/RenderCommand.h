@@ -69,8 +69,8 @@ public:
 	}
 	static void UpdateBufferData(FBuffer* InBuffer, const void* Data, uint32 DataSize);
 
-	static void BindVertexBuffer(FVertexBuffer* VertexBuffer);
-	static void BindIndexBuffer(FIndexBuffer* IndexBuffer);
+	static void BindVertexBuffer(const FVertexBuffer* VertexBuffer);
+	static void BindIndexBuffer(const FIndexBuffer* IndexBuffer);
 	static void BindConstantBuffer(uint32 Slot, FConstantBuffer* ConstantBuffer, EShaderBindFlagBits FlagBits);
 
 	// 상수 버퍼의 일부 구간만 바인딩한다. FirstConstant·NumConstants는 16바이트 단위이며 16의 배수여야 한다.

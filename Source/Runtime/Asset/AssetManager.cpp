@@ -272,7 +272,7 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	{
 		LoadObjStaticMesh(Path);
 	}
-	if (Extension == ".fbx")
+	if (Extension == ".fbx" || Extension == ".FBX")
 	{
 		TArray<FSkeletalMeshImportData> ImportGroups;
 		if (!FFbxImporter::ParseFbx(Path, ImportGroups))

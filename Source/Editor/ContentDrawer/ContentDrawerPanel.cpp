@@ -105,7 +105,7 @@ void FContentDrawerPanel::OnRender()
 				}
 				else // 파일인 경우
 				{
-					if (Path.extension() == ".fbx")
+					if (Path.extension() == ".fbx" || Path.extension() == ".FBX")
 					{
 						const FString SkeletalMeshKey = fs::relative(Path, AssetRootPath).generic_string() + "#Group0";
 						SkeletalMeshAsset = UAssetManager::GetAssetByPath<USkeletalMesh>(SkeletalMeshKey);

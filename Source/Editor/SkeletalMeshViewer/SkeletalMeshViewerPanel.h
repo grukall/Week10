@@ -60,6 +60,7 @@ private:
 	void BuildBoneHierarchy();
 	void DrawBoneNode(int32 BoneIndex);
 	void CreateDefaultSkeletalPreviewScene();
+	void FitCameraToMesh();
 	int32 PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const;
 
 
@@ -69,9 +70,12 @@ private:
 	USkeletalMeshComponent* SkeletalPreviewComponent = nullptr;
 
 	TArray<FTransform> EditableLocalPose; // 수정할 현재 자세
+	// 편집하지 않은 본은 임포트된 행렬을 그대로 보존한다.
+	TArray<FMatrix> LocalPoseMatrices;
 	TArray<FMatrix> GlobalPose;
 	int32 SelectedBoneIndex = -1;         // 현재 선택된 BoneIndex
 	bool bPoseDirty = false;
+	bool bFitCameraPending = false;
 
 	TArray<TArray<int32>> BoneChildren;
 	TArray<int32> RootBones;

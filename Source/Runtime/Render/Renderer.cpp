@@ -66,6 +66,12 @@ namespace
         return Material->ParamLayout == EMaterialParamLayout::StaticMesh && Material->BlendState == EBlendState::Opaque;
     }
 
+    void BindPacketGeometry(const FRenderPacket& Packet)
+    {
+        RenderCommand::BindVertexBuffer(Packet.GetVertexBuffer());
+        RenderCommand::BindIndexBuffer(Packet.GetIndexBuffer());
+    }
+
 	const FMatrix& GetPacketWorld(const FRenderPacket& Packet)
 	{
 		if (Packet.Proxy) return Packet.Proxy->GetLocalToWorld();
@@ -87,7 +93,7 @@ namespace
 		}
 
 		return (static_cast<uint64>(Packet.Material->SortID) << 47)
-			| (static_cast<uint64>(Packet.Mesh->SortID) << 31)
+			| (static_cast<uint64>(Packet.Mesh ? Packet.Mesh->SortID : 0) << 31)
 			| (static_cast<uint64>(Packet.LODIndex & 0x3) << 29);
 	}
 
@@ -311,7 +317,7 @@ void FRenderer::RenderQueueSorting(FRenderQueue& InQueue, const FMatrix& ViewPro
 		for (uint32 i = 0; i < RenderPackets.Num(); ++i)
 		{
 			const FRenderPacket& P = RenderPackets[i];
-			if (!P.Mesh || !P.Material) continue;
+			if (!P.HasGeometry() || !P.Material) continue;
 			SortEntries.Add({ MakeSortKey(P), i });
 		}
 
@@ -353,9 +359,8 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 		const uint32 PacketIndex = SortEntries[k].PacketIndex;
 		const FRenderPacket& RenderPacket = RenderPackets[PacketIndex];
 		if (Pass == ESceneMeshPass::DepthPrepass && !UsesDepthPrepass(RenderPacket.Material)) continue;
-		//if (RenderPacket.Mesh == nullptr || RenderPacket.Material == nullptr) continue;
-		if (RenderPacket.Mesh != LastMesh || RenderPacket.LODIndex != LastLODIndex) {
-			RenderCommand::BindMesh(RenderPacket.Mesh, RenderPacket.LODIndex);
+		if (RenderPacket.VertexBuffer || RenderPacket.IndexBuffer || !RenderPacket.Mesh || RenderPacket.Mesh != LastMesh || RenderPacket.LODIndex != LastLODIndex) {
+			BindPacketGeometry(RenderPacket);
 		}
 		if (RenderPacket.Material != LastMaterial) {
 			BindMaterial(RenderPacket.Material, Pass);
@@ -372,7 +377,7 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 			UpdatePerObjectConstants(RenderPacket, ViewProjection);
 		}
 
-		RenderCommand::DrawIndexed(RenderPacket.IndexCount ? RenderPacket.IndexCount : RenderPacket.Mesh->GetIndexBuffer(RenderPacket.LODIndex)->GetIndexCount(), RenderPacket.StartIndex);
+		RenderCommand::DrawIndexed(RenderPacket.GetDrawIndexCount(), RenderPacket.StartIndex);
 		LastMaterial = RenderPacket.Material;
 		LastMesh = RenderPacket.Mesh;
 		LastLODIndex = RenderPacket.LODIndex;
@@ -405,7 +410,7 @@ FOcclusionMeasureResult FRenderer::MeasureOpaqueOcclusion(const FMatrix& ViewPro
 	for (uint32 k = 0; k < FirstTranslucentIndex; ++k)
 	{
 		const FRenderPacket& Packet = RenderPackets[SortEntries[k].PacketIndex];
-		const uint32 IndexCount = Packet.IndexCount ? Packet.IndexCount : Packet.Mesh->GetIndexBuffer(Packet.LODIndex)->GetIndexCount();
+		const uint32 IndexCount = Packet.GetDrawIndexCount();
 		// 프록시가 없는 패킷(빌보드 등)은 패킷 자체를 한 물체로 센다.
 		const void* Key = Packet.Proxy ? static_cast<const void*>(Packet.Proxy) : static_cast<const void*>(&Packet);
 		Draws.push_back({ Packet.Mesh, Packet.Material, Packet.LODIndex, Packet.Slot, Packet.StartIndex, IndexCount,
@@ -456,7 +461,9 @@ FOcclusionMeasureResult FRenderer::MeasureOpaqueOcclusion(const FMatrix& ViewPro
 	{
 		const FMeasureDraw& Draw = Draws[Index];
 
-		if (Draw.Mesh != BoundMesh || Draw.LODIndex != BoundLOD)
+		if (Draw.Packet && (Draw.Packet->VertexBuffer || Draw.Packet->IndexBuffer))
+			BindPacketGeometry(*Draw.Packet);
+		else if (Draw.Mesh != BoundMesh || Draw.LODIndex != BoundLOD)
 			RenderCommand::BindMesh(Draw.Mesh, Draw.LODIndex);
 		if (Draw.Material != BoundMaterial)
 		{
@@ -775,11 +782,11 @@ bool FRenderer::DrawShadowDepth(const FShadowRequestPerLight& Request, const FSh
     RenderCommand::BindConstantBuffer(2, PerObjectCB.get(), EShaderBindFlagBits::Vertex);
     for (const FRenderPacket& Packet : Pass.CasterPackets)
     {
-        if (!Packet.Mesh || !Packet.Material || !UsesDepthPrepass(Packet.Material)) continue;
-        RenderCommand::BindMesh(Packet.Mesh, Packet.LODIndex);
+        if (!Packet.HasGeometry() || !Packet.Material || !UsesDepthPrepass(Packet.Material)) continue;
+        BindPacketGeometry(Packet);
         // 카메라의 Slot 번호와 무관한 단건 갱신 경로를 사용한다.
         UpdatePerObjectConstants(Packet, Pass.ViewProjection);
-        RenderCommand::DrawIndexed(Packet.IndexCount ? Packet.IndexCount : Packet.Mesh->GetIndexBuffer(Packet.LODIndex)->GetIndexCount(), Packet.StartIndex);
+        RenderCommand::DrawIndexed(Packet.GetDrawIndexCount(), Packet.StartIndex);
     }
     RenderCommand::EndRenderPass(RenderingInfo);
     RenderCommand::BindConstantBuffer(0, ViewCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);

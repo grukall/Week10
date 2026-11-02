@@ -128,7 +128,7 @@ void RenderCommand::UpdateBufferData(FBuffer* InBuffer, const void* Data, uint32
 	RenderDevice->GetContext()->Unmap(Buffer, 0);
 }
 
-void RenderCommand::BindVertexBuffer(FVertexBuffer* VertexBuffer)
+void RenderCommand::BindVertexBuffer(const FVertexBuffer* VertexBuffer)
 {
 	ID3D11Buffer* Buffer = VertexBuffer ? VertexBuffer->GetBuffer() : nullptr;
 
@@ -137,7 +137,7 @@ void RenderCommand::BindVertexBuffer(FVertexBuffer* VertexBuffer)
 	RenderDevice->GetContext()->IASetVertexBuffers(0, 1, &Buffer, &Stride, &Offset);
 }
 
-void RenderCommand::BindIndexBuffer(FIndexBuffer* IndexBuffer)
+void RenderCommand::BindIndexBuffer(const FIndexBuffer* IndexBuffer)
 {
 	ID3D11Buffer* Buffer = IndexBuffer ? IndexBuffer->GetBuffer() : nullptr;
 

@@ -1,6 +1,7 @@
 #include "EnginePCH.h"
 #include "SkinnedMeshComponent.h"
 #include "Render/RenderCommand.h"
+#include "Render/SkeletalMesh.h"
 
 USkinnedMeshComponent::USkinnedMeshComponent()
 {
@@ -12,8 +13,26 @@ void USkinnedMeshComponent::TickComponent(float DeltaTime)
 	RefreshMesh();
 }
 
+void USkinnedMeshComponent::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
+{
+    if (SkeletalMesh == InSkeletalMesh && SkeletalMeshData == (InSkeletalMesh ? &InSkeletalMesh->GetMeshData() : nullptr))
+        return;
+
+    SkeletalMesh = InSkeletalMesh;
+    ClearOverrideMaterials();
+    SetSkeletalMeshData(SkeletalMesh ? &SkeletalMesh->GetMeshData() : nullptr);
+    MarkRenderStateDirty();
+    OnTransformDirty();
+}
+
 void USkinnedMeshComponent::SetSkeletalMeshData(const FSkeletalMeshData* InSkeletalMeshData)
 {
+    if (SkeletalMesh && InSkeletalMeshData != &SkeletalMesh->GetMeshData())
+    {
+        SkeletalMesh = nullptr;
+        ClearOverrideMaterials();
+        MarkRenderStateDirty();
+    }
 	if (InSkeletalMeshData == SkeletalMeshData)
 		return;
 
@@ -59,6 +78,51 @@ const FVertexBuffer* USkinnedMeshComponent::GetDynamicVertexBuffer() const
 FBox USkinnedMeshComponent::CalcLocalBounds() const
 {
 	return LocalBounds;
+}
+
+int32 USkinnedMeshComponent::GetNumMaterials() const
+{
+    return SkeletalMesh ? SkeletalMesh->GetNumMaterials() : 0;
+}
+
+FString USkinnedMeshComponent::GetMaterialSlotName(int32 SlotIndex) const
+{
+    return SkeletalMesh && SlotIndex >= 0 && SlotIndex < GetNumMaterials()
+        ? SkeletalMesh->GetMeshData().MaterialSlots[SlotIndex].Name : FString();
+}
+
+UMaterial* USkinnedMeshComponent::GetDefaultMaterial(int32 SlotIndex) const
+{
+    return SkeletalMesh && SlotIndex >= 0 && SlotIndex < GetNumMaterials()
+        ? SkeletalMesh->GetMaterial(static_cast<uint32>(SlotIndex)) : nullptr;
+}
+
+void USkinnedMeshComponent::SubmitToRenderQueue(FRenderQueue& Queue)
+{
+    if (!SkeletalMesh || !IsVisible())
+        return;
+
+    RefreshMesh();
+    const FIndexBuffer* Indices = SkeletalMesh->GetIndexBuffer();
+    if (!DynamicVertexBuffer || !DynamicVertexBuffer->GetBuffer() || !Indices || !Indices->GetBuffer())
+        return;
+
+    const FMatrix* World = Queue.StoreWorldMatrix(GetWorldMatrix());
+    for (const FSkeletalMeshSection& Section : SkeletalMesh->GetMeshData().Sections)
+    {
+        UMaterial* Material = GetMaterial(static_cast<int32>(Section.MaterialSlotIndex));
+        if (!Material || Section.IndexCount == 0)
+            continue;
+
+        FRenderPacket& Packet = Queue.AddDefaulted_GetRef();
+        Packet.Proxy = GetSceneProxy();
+        Packet.Model = World;
+        Packet.VertexBuffer = DynamicVertexBuffer.get();
+        Packet.IndexBuffer = Indices;
+        Packet.Material = Material;
+        Packet.StartIndex = Section.StartIndex;
+        Packet.IndexCount = Section.IndexCount;
+    }
 }
 
 void USkinnedMeshComponent::OnMeshDataChanged()

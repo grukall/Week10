@@ -4,6 +4,8 @@
 #include "Render/Buffer.h"
 #include "Render/SkeletalMeshData.h"
 
+class USkeletalMesh;
+
 class USkinnedMeshComponent : public UMeshComponent
 {
 	DECLARE_CLASS(USkinnedMeshComponent, UMeshComponent)
@@ -13,6 +15,9 @@ public:
 	~USkinnedMeshComponent() override = default;
 
     void TickComponent(float DeltaTime) override;
+	// 렌더링에 필요한 재질과 인덱스 버퍼를 포함한 에셋을 설정한다.
+    void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
+    USkeletalMesh* GetSkeletalMesh() const { return SkeletalMesh; }
 	// SkeletalMeshData를 설정하면 내부적으로 Skinning 관련 버퍼를 초기화
     void SetSkeletalMeshData(const FSkeletalMeshData* InSkeletalMeshData);
     // 공통 갱신 진입점.
@@ -25,6 +30,10 @@ public:
     const FVertexBuffer* GetDynamicVertexBuffer() const;
     // 현재 변형된 메시 전체의 로컬 AABB
     FBox CalcLocalBounds() const override;
+    int32 GetNumMaterials() const override;
+    FString GetMaterialSlotName(int32 SlotIndex) const override;
+    UMaterial* GetDefaultMaterial(int32 SlotIndex) const override;
+    void SubmitToRenderQueue(FRenderQueue& Queue) override;
 
 protected:
     // 새로운 메시의 본계층에 맞게 다시 초기화
@@ -39,6 +48,7 @@ protected:
 	TArray<FMatrix> ComponentSpaceTransforms;
 
 private:
+    USkeletalMesh* SkeletalMesh = nullptr;
     // SkeletalMeshData가 변경될때 멤버 변수를 초기화
     void InitializeSkinningResources();
     // Skinning 수행

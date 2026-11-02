@@ -2,6 +2,7 @@
 #include "Render/SceneRenderer.h"
 #include "Component/PrimitiveComponent.h"
 #include "Component/StaticMeshComponent.h"
+#include "Component/SkinnedMeshComponent.h"
 #include "Component/BillboardComponent.h"
 #include "Component/ParticleSubUVComponent.h"
 #include "Engine/PrimitiveSceneProxy.h"
@@ -219,7 +220,9 @@ float DistanceSquaredToBox(const FVector& Point, const FAABB& Bounds)
 // 실제 메시만 Receiver로 센다. 에디터의 광원 Billboard는 bReceiveShadow가 켜져 있어도 그림자를 조회하지 않는다.
 bool IsShadowReceivingMesh(const FPrimitiveSceneProxy* Proxy)
 {
-    return Proxy && Proxy->IsVisible() && Proxy->ReceivesShadow() && Proxy->GetMesh();
+    if (!Proxy || !Proxy->IsVisible() || !Proxy->ReceivesShadow()) return false;
+    const auto* Skinned = Cast<USkinnedMeshComponent>(Proxy->GetComponent());
+    return Proxy->GetMesh() || (Skinned && Skinned->GetSkeletalMesh());
 }
 
 // 그림자를 실제로 조회할 수 있는 Receiver가 어느 활성 View에라도 있는지 보수적으로 판정한다.
@@ -467,7 +470,11 @@ void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& 
         }
         else
         {
+            const uint32 FirstPacket = static_cast<uint32>(OutQueue.Num());
             Primitive->SubmitToRenderQueue(OutQueue);
+            const float Distance = (Primitive->GetWorldLocation() - View.GetCameraLocation()).Size();
+            for (uint32 Index = FirstPacket; Index < static_cast<uint32>(OutQueue.Num()); ++Index)
+                OutQueue[Index].CameraToParticleDistance = Distance;
         }
     }
     SelectLODs(LODInputs, LODContext, SelectedLODs);
@@ -563,8 +570,9 @@ void FSceneRenderer::BuildShadowCasterQueue(UWorld& World, FShadowDepthPassInfo&
                                     [&](FPrimitiveSceneProxy* Proxy)
                                     {
                                         if (!Proxy->IsVisible() || !Proxy->CastsShadow()) return;
-                                        UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(Proxy->GetComponent());
+                                        UPrimitiveComponent* Component = Proxy->GetComponent();
                                         if (!Component || !Component->GetOwner() || Component->GetOwner()->GetWorld() != &World) return;
+                                        if (!Cast<UStaticMeshComponent>(Component) && !Cast<USkinnedMeshComponent>(Component)) return;
                                         if (World.IsGameWorld() && Component->IsHiddenInGame()) return;
                                         const FAABB& Bounds = Proxy->GetBounds();
                                         // 프러스텀 판정은 평면마다 따로 하므로, 바닥처럼 넓은 박스는 실제로 겹치지 않아도 통과할 수 있다.
@@ -584,13 +592,16 @@ void FSceneRenderer::BuildShadowCasterQueue(UWorld& World, FShadowDepthPassInfo&
                                             return;
                                         }
                                         const int32 FirstPacket = Queue.Num();
-                                        Component->SubmitToRenderQueue(Queue, 0);
+                                        if (auto* StaticComponent = Cast<UStaticMeshComponent>(Component))
+                                            StaticComponent->SubmitToRenderQueue(Queue, 0);
+                                        else
+                                            Component->SubmitToRenderQueue(Queue);
                                         // 이 객체가 추가한 Section만 depth draw 기준으로 걸러낸다.
                                         int32 Kept = FirstPacket;
                                         for (int32 Index = FirstPacket; Index < Queue.Num(); ++Index)
                                         {
                                             const FRenderPacket& Packet = Queue[Index];
-                                            if (!Packet.Mesh || !Packet.Material || Packet.Material->ParamLayout != EMaterialParamLayout::StaticMesh || Packet.Material->BlendState != EBlendState::Opaque) continue;
+                                            if (!Packet.HasGeometry() || !Packet.Material || Packet.Material->ParamLayout != EMaterialParamLayout::StaticMesh || Packet.Material->BlendState != EBlendState::Opaque) continue;
                                             if (Kept != Index) Queue[Kept] = Packet;
                                             ++Kept;
                                         }

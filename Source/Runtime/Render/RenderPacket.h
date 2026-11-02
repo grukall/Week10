@@ -23,6 +23,25 @@ struct FRenderPacket
     uint32 Slot = InvalidObjectSlot;
     uint8 LODIndex = 0;
     bool bOccludedByGpu = false;
+
+    // CPU 스키닝처럼 인스턴스별 정점을 쓰는 메시의 비소유 버퍼 참조.
+    const FVertexBuffer* VertexBuffer = nullptr;
+    const FIndexBuffer* IndexBuffer = nullptr;
+
+    const FVertexBuffer* GetVertexBuffer() const
+    {
+        return VertexBuffer ? VertexBuffer : (Mesh ? Mesh->GetVertexBuffer(LODIndex) : nullptr);
+    }
+    const FIndexBuffer* GetIndexBuffer() const
+    {
+        return IndexBuffer ? IndexBuffer : (Mesh ? Mesh->GetIndexBuffer(LODIndex) : nullptr);
+    }
+    bool HasGeometry() const { return GetVertexBuffer() && GetIndexBuffer(); }
+    uint32 GetDrawIndexCount() const
+    {
+        const FIndexBuffer* Buffer = GetIndexBuffer();
+        return IndexCount ? IndexCount : (Buffer ? Buffer->GetIndexCount() : 0);
+    }
 };
 
 // Shared bindings, with one ordinary indexed draw per item.
