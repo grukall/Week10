@@ -9,11 +9,14 @@
 #include "Math/Color.h"
 #include "Render/Vertex.h"
 
+#include <cmath>
+
 /* Rule */
-// 변환 순서 (SMD : 로컬 → 부모) → (SMC : 컴포넌트) → 월드
-// 각 정점 데이터 별로 Influence 정보를 가지는게 아닌 Influence 버퍼 배열에서 읽어오는 방식
-// Bone Head의 AABB는 Component에서 관리한다
-// Bone Index는 FSkeletalMeshData의 RefBones의 인덱스를 기준으로 한다.
+// 1. 변환 순서 (SMD : 로컬 → 부모) → (SMC : 컴포넌트) → 월드
+// 2. 각 정점 데이터 별로 Influence 정보를 가지는게 아닌 Influence 버퍼 배열에서 읽어오는 방식
+// 3. Bone Head의 AABB는 Component에서 관리한다
+// 4. Bone Index는 FSkeletalMeshData의 RefBones의 인덱스를 기준으로 한다.
+// 5. Influences를 채울때는 각 skeleta 정점별로 최대 4개, 최소 Weight는 전부 제거한 상태로 저장되어 있어야함 
 
 struct FSkeletalMeshInfluence
 {
@@ -91,8 +94,39 @@ struct FSkeletalMeshData
     // AABB
     FBox ReferenceBounds{ FVector::ZeroVector,FVector::ZeroVector };
 
-    bool IsValid()
+    // 정점의 InfluenceInfo 유효성 검사
+    bool IsValid(uint32 index)
     {
-        // Todo : 인덱스 매핑이 잘되어 있는지 확인하는 함수 완성하기
+        // index 유효성 검사
+        if (index >= Vertices.Num())
+            return false;
+
+        FSkeletalMeshVertex Vertex = Vertices[index];
+        FSkeletalMeshVertexInfluences Info = Vertex.InfluenceInfo;
+
+        const uint32 Start = Info.FirstInfluence;
+        const uint32 Count = Info.InfluenceCount;
+        const uint32 Total = Influences.Num();
+
+        if (Start > Total || Count > Total - Start)
+            return false;
+        
+        // 가중치 총합 1.0 검사
+        float WeightSum = 0.0f;
+        for (uint32 i = 0; i < Count; i++)
+        {
+            uint32 curr = i + Start;
+            const FSkeletalMeshInfluence& Influence = Influences[curr];
+            const float Weight = Influence.Weight;
+            if (!std::isfinite(Weight) || Weight < 0.0f || Weight > 1.0f)
+                return false;
+            if (Weight == 0.0f) // 현재 규칙에서는 해당 일이 발생할일이 없어야함 (5번룰 참고)
+                continue;
+            if (Influence.BoneIndex < 0 || Influence.BoneIndex >= RefBones.Num())
+                return false;
+
+            WeightSum += Weight;
+        }
+        return FMath::IsNearlyEqual(WeightSum, 1.0f, 1e-4f);
     }
 };
