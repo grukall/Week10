@@ -197,6 +197,7 @@ namespace
                 return false;
 
             Vertex.Vertex.UV = Wedge.UVs.IsEmpty() ? FVector2(0.0f, 0.0f) : Wedge.UVs[0];
+			Vertex.Vertex.UV.Y = 1.0f - Vertex.Vertex.UV.Y; // FBX는 V축이 반대
             Vertex.Vertex.Color = FVector4(Wedge.Color.R, Wedge.Color.G, Wedge.Color.B, Wedge.Color.A);
             if (!IsFinite(Vertex.Vertex.UV) || !IsFinite(Vertex.Vertex.Color))
                 return false;
