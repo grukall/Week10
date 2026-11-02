@@ -538,11 +538,11 @@ void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 			continue;
 		}
 
-		const bool bSelected = BoneIndex == SelectedBoneIndex;
-		const FVector4 Color = bSelected
+		const bool bJointSelected = BoneIndex == SelectedBoneIndex;
+		const FVector4 JointColor = bJointSelected
 			? FVector4(1.0f, 0.8f, 0.1f, 1.0f)
 			: FVector4(0.5f, 0.8f, 1.0f, 1.0f);
-		AddWireSphere(LineBatcher, BonePosition, BoneRadius, SphereSegments, Color);
+		AddWireSphere(LineBatcher, BonePosition, BoneRadius, SphereSegments, JointColor);
 
 		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
 		const FVector ParentPosition = GetBoneGlobalPosition(ParentIndex);
@@ -550,6 +550,11 @@ void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 		{
 			continue;
 		}
+
+		const bool bBoneSelected = ParentIndex == SelectedBoneIndex;
+		const FVector4 BoneColor = bBoneSelected
+			? FVector4(1.0f, 0.8f, 0.1f, 1.0f)
+			: FVector4(0.5f, 0.8f, 1.0f, 1.0f);
 
 		const FVector BoneVector = BonePosition - ParentPosition;
 		const float BoneLength = BoneVector.Size();
@@ -569,7 +574,7 @@ void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 
 		for (int32 CornerIndex = 0; CornerIndex < 4; ++CornerIndex)
 		{
-			LineBatcher.AddLine(Corners[CornerIndex], BonePosition, Color);
+			LineBatcher.AddLine(Corners[CornerIndex], BonePosition, BoneColor);
 		}
 	}
 }
@@ -688,7 +693,7 @@ void FSkeletalMeshViewerPanel::UpdateBoneGizmoInput(bool bInputEnabled)
 int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const
 {
 	constexpr float PickBoneRadius = 7.0f;
-	constexpr float PickjointRadius = 10.0f;
+	constexpr float PickjointRadius = 15.0f;
 	int32 PickedBoneIndex = -1;
 	float NearestDistance = PickjointRadius;
 
