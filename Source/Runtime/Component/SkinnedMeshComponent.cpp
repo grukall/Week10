@@ -36,6 +36,7 @@ void USkinnedMeshComponent::RefreshMesh()
 
     UpdateSkinning();
     UploadSkinnedVertices();
+	OnTransformDirty();
 
 	bSkinningDirty = false;
 }
@@ -158,8 +159,6 @@ void USkinnedMeshComponent::UpdateSkinning()
 
 	LocalBounds.Min = Min;
 	LocalBounds.Max = Max;
-
-	OnTransformDirty();
 }
 
 void USkinnedMeshComponent::UploadSkinnedVertices()

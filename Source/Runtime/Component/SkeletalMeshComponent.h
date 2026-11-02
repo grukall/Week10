@@ -22,7 +22,7 @@ public:
     // Index의 Local 포즈.
     const FMatrix& GetBoneLocalTransform(int32 BoneIndex) const;
 
-    // 각 본의 RefLocalMatrix를 BoneSpaceTransforms에 복사
+	// ReferencePose로 초기화
     void ResetToReferencePose();
 
     // 본별 AABB 
@@ -46,5 +46,5 @@ private:
 	// RefBones와 같은 인덱스이며, 본 포즈를 누적한 뒤 갱신한다.
 	TArray<FBox> BonePickBounds;
 
-	bool bPoseDirty = false;
+	bool bPoseDirty = true;
 };
