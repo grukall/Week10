@@ -275,8 +275,6 @@ namespace
         OutMaterial.DiffuseTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sDiffuse);
         OutMaterial.NormalTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sNormalMap);
 
-        HTR_LOG(Info, "[FBX Texture] Material={}, Diffuse={}, Normal={}", OutMaterial.Name, OutMaterial.DiffuseTexturePath, OutMaterial.NormalTexturePath);
-        HTR_LOG(Info, "[FBX MaterialData] Name={}, BaseColor=({}, {}, {}), Shininess={}", OutMaterial.Name, OutMaterial.BaseColor.R, OutMaterial.BaseColor.G, OutMaterial.BaseColor.B, OutMaterial.Shininess);
     }
 
     // 탄젠트와 Binormal의 저장 방식을 해석해 현재 꼭짓점에 해당하는 벡터를 읽는다.
@@ -378,17 +376,13 @@ namespace
         }
 
         FbxGeometryElementMaterial* MaterialElement = Mesh->GetElementMaterial(0);
-        int32 MaterialPolygonCount = 0;
 
         // 3. 첫 번째 UV 세트를 UV0로 사용
         FbxStringList UVSetNames;
         Mesh->GetUVSetNames(UVSetNames);
 
         const char* UVSetName = UVSetNames.GetCount() > 0 ? UVSetNames.GetStringAt(0) : nullptr;
-        int32 UVWedgeCount = 0;
         int32 NormalWedgeCount = 0;
-
-        HTR_LOG(Info, "[FBX TangentSource] Mesh={}, TangentSets={}, BinormalSets={}", ImportedMesh.Name, Mesh->GetElementTangentCount(), Mesh->GetElementBinormalCount());
 
         const FbxGeometryElementTangent* TangentElement = Mesh->GetElementTangent(0);
         const FbxGeometryElementBinormal* BinormalElement = Mesh->GetElementBinormal(0);
@@ -431,9 +425,6 @@ namespace
             if (LocalMaterialIndex >= 0 && LocalMaterialIndex < MaterialMap.Num())
             {
                 Polygon.MaterialSlotIndex = MaterialMap[LocalMaterialIndex];
-
-                if (Polygon.MaterialSlotIndex >= 0)
-                    ++MaterialPolygonCount;
             }
 
             const int32 VertexCount = Mesh->GetPolygonSize(PolygonIndex);
@@ -450,10 +441,7 @@ namespace
                     bool bUnmapped = false;
 
                     if (Mesh->GetPolygonVertexUV(PolygonIndex, VertexIndex, UVSetName, UV, bUnmapped) && !bUnmapped)
-                    {
                         Wedge.UVs.Add(FVector2(static_cast<float>(UV[0]), static_cast<float>(UV[1])));
-                        ++UVWedgeCount;
-                    }
                 }
 
                 // 노멀은 UV 유무와 관계없이 읽는다.
@@ -579,12 +567,6 @@ namespace
         ImportedMesh.bHasNormals = ImportedMesh.Wedges.Num() > 0 && NormalWedgeCount == ImportedMesh.Wedges.Num();
         ImportedMesh.bHasTangents = ImportedMesh.Wedges.Num() > 0 && TangentWedgeCount == ImportedMesh.Wedges.Num();
         ImportedMesh.bHasVertexColors = ColorWedgeCount > 0;
-
-        HTR_LOG(Info, "[FBX UV] Mesh={}, Set={}, Wedges={}, WithUV={}", ImportedMesh.Name, UVSetName ? UVSetName : "None", ImportedMesh.Wedges.Num(), UVWedgeCount);
-        HTR_LOG(Info, "[FBX Normal] Mesh={}, Wedges={}, WithNormal={}", ImportedMesh.Name, ImportedMesh.Wedges.Num(), NormalWedgeCount);
-        HTR_LOG(Info, "[FBX Tangent] Mesh={}, Wedges={}, WithTangent={}", ImportedMesh.Name, ImportedMesh.Wedges.Num(), TangentWedgeCount);
-        HTR_LOG(Info, "[FBX Color] Mesh={}, Wedges={}, WithColor={}", ImportedMesh.Name, ImportedMesh.Wedges.Num(), ColorWedgeCount);
-        HTR_LOG(Info, "[FBX Material] Mesh={}, Slots={}, Polygons={}, WithMaterial={}", ImportedMesh.Name, MaterialMap.Num(), ImportedMesh.Polygons.Num(), MaterialPolygonCount);
 
         // 5. 원본 점에 연결된 본 번호와 가중치
         const int32 SkinCount = Mesh->GetDeformerCount(FbxDeformer::eSkin);
@@ -807,7 +789,6 @@ namespace
                 }
 
                 BoneBindFound[BoneIndex] = 1;
-                HTR_LOG(Info, "[FBX Bind] FromPose: Bone={}, Name={}", BoneIndex, Bone.Name);
                 break;
             }
         }
@@ -837,23 +818,25 @@ namespace
 
             Bone.RefGlobalMatrix = ConvertFbxMatrix(LocalMatrix) * ParentGlobal;
             BoneBindFound[BoneIndex] = 2;
-
-            HTR_LOG(Warning, "[FBX Bind] ReferenceFallback: Bone={}, Name={}", BoneIndex, Bone.Name);
         }
 
         // 4. 최종 미확보 본 확인
         int32 MissingCount = 0;
+        int32 FallbackCount = 0;
 
         for (int32 BoneIndex = 0; BoneIndex < BoneBindFound.Num(); ++BoneIndex)
         {
-            if (BoneBindFound[BoneIndex] == 0)
+            if (BoneBindFound[BoneIndex] == 2)
+                ++FallbackCount;
+            else if (BoneBindFound[BoneIndex] == 0)
             {
                 ++MissingCount;
                 HTR_LOG(Warning, "[FBX Bind] Missing: Bone={}, Name={}", BoneIndex, OutData.Skeleton.RefBones[BoneIndex].Name);
             }
         }
 
-        HTR_LOG(Info, "[FBX Bind] Bones={}, Missing={}", BoneBindFound.Num(), MissingCount);
+        if (FallbackCount > 0)
+            HTR_LOG(Warning, "[FBX Bind] Default pose used for {} end bones: Group={}", FallbackCount, OutData.Name);
         return MissingCount == 0;
     }
 
@@ -906,31 +889,6 @@ namespace
             CollectSkeletalMeshGroups(Node->GetChild(ChildIndex), SceneRoot, Groups);
     }
 
-    // 필요할 때 장면의 노드 종류와 부모·자식 구조를 출력하는 진단용 함수다.
-    void LogNodeHierarchy(FbxNode* Node, int32 Depth = 0)
-    {
-        if (!Node)
-            return;
-
-        FbxNodeAttribute* Attribute = Node->GetNodeAttribute();
-        const char* Type = "None";
-
-        if (Node->GetMesh())
-            Type = "Mesh";
-        else if (Node->GetSkeleton())
-            Type = "Bone";
-        else if (Attribute && Attribute->GetAttributeType() == FbxNodeAttribute::eNull)
-            Type = "Null";
-        else if (Attribute)
-            Type = "Other";
-
-        const FString Indent(Depth * 2, ' ');
-        HTR_LOG(Info, "[FBX Node] {}{} [{}] Children={}", Indent, Node->GetName(), Type, Node->GetChildCount());
-
-        for (int32 ChildIndex = 0; ChildIndex < Node->GetChildCount(); ++ChildIndex)
-            LogNodeHierarchy(Node->GetChild(ChildIndex), Depth + 1);
-    }
-
     // 파일에 지정된 SkinningType을 읽는 함수다.
     bool ExtractSkinningTypes(const FFbxSkeletalMeshGroup& Group, FSkeletalMeshImportData& OutData)
     {
@@ -946,28 +904,23 @@ namespace
                 FbxSkin* Skin = static_cast<FbxSkin*>(Mesh->GetDeformer(SkinIndex, FbxDeformer::eSkin));
 
                 EImportedSkinningType Type = EImportedSkinningType::None;
-                const char* TypeName = "None";
 
                 switch (Skin->GetSkinningType())
                 {
                 case FbxSkin::eRigid:
                     Type = EImportedSkinningType::Rigid;
-                    TypeName = "Rigid";
                     break;
 
                 case FbxSkin::eLinear:
                     Type = EImportedSkinningType::Linear;
-                    TypeName = "Linear";
                     break;
 
                 case FbxSkin::eDualQuaternion:
                     Type = EImportedSkinningType::DualQuaternion;
-                    TypeName = "DualQuaternion";
                     break;
 
                 case FbxSkin::eBlend:
                     Type = EImportedSkinningType::Blend;
-                    TypeName = "Blend";
                     break;
 
                 default:
@@ -984,8 +937,6 @@ namespace
                 }
 
                 ImportedMesh.SkinningType = Type;
-
-                HTR_LOG(Info, "[FBX Skin] Mesh={}, Skin={}, Type={}", ImportedMesh.Name, SkinIndex, TypeName);
             }
         }
 
@@ -1079,8 +1030,6 @@ namespace
                     }
                 }
             }
-
-            HTR_LOG(Info, "[FBX LinkMode] Mesh={}, Normalize={}, TotalOne={}", ImportedMesh.Name, NormalizeCount, TotalOneCount);
         }
 
         return true;
@@ -1204,8 +1153,6 @@ namespace
             }
         }
 
-        HTR_LOG(Info, "[FBX Validate] Group={}, Meshes={}, Bones={}, Materials={} OK",
-            Data.Name, Data.Meshes.Num(), BoneCount, MaterialCount);
         return true;
     }
 
@@ -1240,22 +1187,11 @@ bool FFbxImporter::ResolveTexturePath(const FString& FbxPath, FString& TexturePa
     }
 
     TexturePath = ResolvedPath.generic_string();
-    HTR_LOG(Info, "[FBX Texture] Resolved: {}", TexturePath);
     return true;
 }
 
 bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>& OutData)
 {
-    // SDK와 엔진의 행렬 변환 결과를 비교하는 기존 진단 코드.
-    FbxAMatrix TestMatrix;
-    TestMatrix.SetTRS(FbxVector4(10, 20, 30), FbxVector4(0, 0, 90), FbxVector4(2, 3, 4));
-
-    const FbxVector4 FbxResult = TestMatrix.MultT(FbxVector4(1, 2, 3));
-    const FVector EngineResult = ConvertFbxMatrix(TestMatrix).TransformPosition(FVector(1, 2, 3));
-
-    HTR_LOG(Info, "[MatrixTest] FBX=({}, {}, {})", FbxResult[0], FbxResult[1], FbxResult[2]);
-    HTR_LOG(Info, "[MatrixTest] Engine=({}, {}, {})", EngineResult.X, EngineResult.Y, EngineResult.Z);
-
     // FBX SDK 객체의 생성과 수명을 관리하는 최상위 객체
     FbxManager* Manager = FbxManager::Create();
     if (!Manager)
@@ -1299,8 +1235,6 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
         Manager->Destroy();
         return false;
     }
-
-    HTR_LOG(Info, "[FBX] Triangulated: {}", Path);
 
     FbxNode* RootNode = Scene->GetRootNode();
     TArray<FFbxSkeletalMeshGroup> Groups;
@@ -1357,8 +1291,6 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
             ResolveTexturePath(Path, Material.DiffuseTexturePath);
             ResolveTexturePath(Path, Material.NormalTexturePath);
         }
-
-        HTR_LOG(Info, "[FBX Identity] Group={}, RootPath={}", ImportedData.Name, BuildSourceNodePath(Group.RootNode));
 
         if (!ValidateImportData(ImportedData))
         {
