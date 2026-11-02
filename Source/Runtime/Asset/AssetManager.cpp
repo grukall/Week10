@@ -124,11 +124,71 @@ namespace
 			Data.RefBones.IsEmpty())
 			return nullptr;
 
+		UMaterial* DefaultMaterial = UAssetManager::GetAssetByPath<UMaterial>("DefaultMaterial");
+		if (!DefaultMaterial)
+		{
+			HTR_LOG(Error, "[Skeletal Mesh] Default material is not initialized.");
+			return nullptr;
+		}
+
+		if (Data.MaterialSlots.IsEmpty())
+		{
+			FSkeletalMaterialSlot DefaultSlot;
+			DefaultSlot.Name = "Default";
+			Data.MaterialSlots.Add(std::move(DefaultSlot));
+		}
+		if (Data.Sections.IsEmpty())
+		{
+			FSkeletalMeshSection Section;
+			Section.IndexCount = static_cast<uint32>(Data.Indices.Num());
+			Data.Sections.Add(Section);
+		}
+
+		TUniquePtr<FIndexBuffer> IndexBuffer = RenderCommand::CreateStaticIndexBuffer(
+			Data.Indices.GetData(), static_cast<uint32>(Data.Indices.Num()));
+		if (!IndexBuffer || !IndexBuffer->GetBuffer())
+		{
+			HTR_LOG(Error, "[Skeletal Mesh] Failed to create index buffer.");
+			return nullptr;
+		}
+
 		USkeletalMesh* Mesh = NewObject<USkeletalMesh>();
 		if (!Mesh)
 			return nullptr;
 
 		Mesh->MeshData = std::move(Data);
+		Mesh->IndexBuffer = std::move(IndexBuffer);
+
+		for (const FSkeletalMaterialSlot& Slot : Mesh->MeshData.MaterialSlots)
+		{
+			UMaterial* Material = UMaterial::CreateInstance(DefaultMaterial);
+			if (!Material)
+				return nullptr;
+
+			Material->BaseColor = Slot.BaseColor;
+			Material->Shininess = Slot.Shininess;
+			Material->SpecularColor = Slot.SpecularColor;
+			Material->SamplerState = ESamplerState::LinearWrap;
+			Material->SetBlendState(Material->BaseColor.A < 1.0f ? EBlendState::AlphaBlend : EBlendState::Opaque);
+
+			const auto SetTexture = [Material](int32 TextureSlot, const FString& TexturePath, bool bSRGB)
+			{
+				while (static_cast<int32>(Material->Textures.Num()) <= TextureSlot)
+					Material->Textures.Add(nullptr);
+				if (TexturePath.empty())
+					return;
+
+				if (UTexture2D* Texture = UAssetManager::Get().LoadTexture(TexturePath, true, bSRGB))
+					Material->Textures[TextureSlot] = Texture;
+				else
+					HTR_LOG(Warning, "[Skeletal Material] Texture load failed, using default: {}", TexturePath);
+			};
+
+			SetTexture(0, Slot.DiffuseTexturePath, true);
+			SetTexture(1, Slot.NormalTexturePath, false);
+			Mesh->Materials.Add(Material);
+		}
+
 		return Mesh;
 	}
 
@@ -252,23 +312,6 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 				Mesh->MeshData.Vertices.Num(),
 				Mesh->MeshData.RefBones.Num());
 
-			// 지금은 텍스처를 미리 로드한다. 실제 재질 연결은 이후 작업.
-			for (const FImportedMaterial& Material : ImportData.Materials)
-			{
-				if (!Material.DiffuseTexturePath.empty() &&
-					!LoadTexture(Material.DiffuseTexturePath, true, true))
-				{
-					HTR_LOG(Warning, "[FBX Texture] Load failed: {}",
-						Material.DiffuseTexturePath);
-				}
-
-				if (!Material.NormalTexturePath.empty() &&
-					!LoadTexture(Material.NormalTexturePath, true, false))
-				{
-					HTR_LOG(Warning, "[FBX Texture] Load failed: {}",
-						Material.NormalTexturePath);
-				}
-			}
 		}
 
 		return;
