@@ -137,6 +137,11 @@ bool UEditorEngine::Init()
 	DebugPanel = EditorUI->AddEditorPanel<FDebugPanel>();
 	ShadowAtlasPanel = EditorUI->AddEditorPanel<FShadowAtlasPanel>();
 	SkeletalMeshViewerPanel = EditorUI->AddEditorPanel<FSkeletalMeshViewerPanel>();
+	ContentDrawerPanel->SetSkeletalMeshOpenCallback([this](USkeletalMesh* SkeletalMesh)
+	{
+		SkeletalMeshViewerPanel->SetSkeletalMesh(SkeletalMesh);
+		SkeletalMeshViewerPanel->SetOpen(true);
+	});
 
 	FWorldContext& SkeletalMeshViewContext = CreateNewWorldContext(EWorldType::Editor);
 	SkeletalMeshViewContext.SetCurrentWorld(UWorld::CreateWorld(EWorldType::Editor, false, FName("SkeletalPreviewWorld")));
@@ -241,9 +246,11 @@ bool UEditorEngine::Init()
 
 	EditorControlsPanel->SetWorld(GetActiveWorld());
 	EditorControlsPanel->SetIsPlayingQuery([this]() { return IsPlaying(); });
-	EditorControlsPanel->SetIsBoneGizmoQuery([this](){ 
-		return !SkeletalMeshViewerPanel->IsSkeletalPreviewHovered()
-			&& !SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured(); });
+	EditorControlsPanel->SetIsBoneGizmoQuery([this]()
+	{ 
+		return !SkeletalMeshViewerPanel->IsSkeletalPreviewHovered() 
+			&& !SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured(); 
+	});
 	EditorControlsPanel->SetGizmo(Gizmo.get());
 	EditorControlsPanel->SetViewportsPanel(ViewportsPanel);
 

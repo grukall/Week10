@@ -6,7 +6,7 @@
 class USkeletalMesh : public URenderAsset
 {
     DECLARE_CLASS(USkeletalMesh, URenderAsset)
-
+             
 public:
     FSkeletalMeshData MeshData;
 

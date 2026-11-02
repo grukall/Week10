@@ -11,6 +11,7 @@
 #include "Math/Rotator.h"
 #include "Input/InputSystem.h"
 #include "Render/LineBatcher.h"
+#include "Render/SkeletalMesh.h"
 
 namespace
 {
@@ -28,6 +29,24 @@ namespace
 			&& std::isfinite(Transform.Rotation.Yaw)
 			&& std::isfinite(Transform.Rotation.Roll)
 			&& IsFiniteVector(Transform.Scale);
+	}
+
+	FTransform MatrixToTransform(const FMatrix& Matrix)
+	{
+		FTransform Transform;
+		Transform.Location = FVector(Matrix[3][0], Matrix[3][1], Matrix[3][2]);
+
+		FVector XAxis(Matrix[0][0], Matrix[0][1], Matrix[0][2]);
+		FVector YAxis(Matrix[1][0], Matrix[1][1], Matrix[1][2]);
+		FVector ZAxis(Matrix[2][0], Matrix[2][1], Matrix[2][2]);
+		Transform.Scale = FVector(XAxis.Size(), YAxis.Size(), ZAxis.Size());
+
+		FMatrix RotationMatrix = FMatrix::Identity;
+		RotationMatrix.SetAxis(0, XAxis.Normalized());
+		RotationMatrix.SetAxis(1, YAxis.Normalized());
+		RotationMatrix.SetAxis(2, ZAxis.Normalized());
+		Transform.Rotation = MatrixToRotator(RotationMatrix);
+		return Transform;
 	}
 
 	void AddWireCircle(FLineBatcher& LineBatcher, const FVector& Center, const FVector& AxisA, const FVector& AxisB, 
@@ -71,7 +90,6 @@ bool FSkeletalMeshViewerPanel::Init()
 	BoneGizmo->SetMode(EGizmoMode::Location);
 	BoneGizmo->SetSpace(EGizmoSpace::Local);
 
-	CreateMockSkeleton();
 	return true;
 }
 
@@ -120,15 +138,15 @@ void FSkeletalMeshViewerPanel::OnRender()
 		ImGui::Separator();
 		if (ImGui::BeginTabBar("##SkeletalMeshViewer"))
 		{
-			if (ImGui::BeginTabItem("Mock Humanoid"))
+			if (ImGui::BeginTabItem("Skeleton"))
 			{
-				if (MockRootBones.IsEmpty())
+				if (RootBones.IsEmpty())
 				{
 					ImGui::TextDisabled("No root bone.");
 				}
 				else
 				{
-					for (int32 RootBoneIndex : MockRootBones)
+					for (int32 RootBoneIndex : RootBones)
 					{
 						DrawBoneNode(RootBoneIndex);
 					}
@@ -141,20 +159,22 @@ void FSkeletalMeshViewerPanel::OnRender()
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("Bone Transform");
 		ImGui::Separator();
-		if (!MockBones.IsValidIndex(SelectedBoneIndex))
+		if (!SkeletalMesh || !SkeletalMesh->MeshData.RefBones.IsValidIndex(SelectedBoneIndex))
 		{
 			ImGui::TextDisabled("No bone is selected.");
 		}
 		else
 		{
-			const FMockBone& SelectedBone = MockBones[SelectedBoneIndex];
+			const FSkeletalMeshRefBone& SelectedBone = SkeletalMesh->MeshData.RefBones[SelectedBoneIndex];
 			FTransform EditedTransform = EditableLocalPose[SelectedBoneIndex];
 
-			ImGui::Text("Name: %s", SelectedBone.Name.c_str());
+			const FString SelectedBoneName = SelectedBone.Name.ToString();
+			ImGui::Text("Name: %s", SelectedBoneName.c_str());
 			ImGui::Text("Index: %d", SelectedBoneIndex);
-			if (MockBones.IsValidIndex(SelectedBone.ParentIndex))
+			if (SkeletalMesh->MeshData.RefBones.IsValidIndex(SelectedBone.ParentIndex))
 			{
-				ImGui::Text("Parent: %s", MockBones[SelectedBone.ParentIndex].Name.c_str());
+				const FString ParentBoneName = SkeletalMesh->MeshData.RefBones[SelectedBone.ParentIndex].Name.ToString();
+				ImGui::Text("Parent: %s", ParentBoneName.c_str());
 			}
 			else
 			{
@@ -176,15 +196,15 @@ void FSkeletalMeshViewerPanel::OnRender()
 
 			if (ImGui::Button("Reset Bone"))
 			{
-				EditableLocalPose[SelectedBoneIndex] = SelectedBone.ReferenceLocalTransform;
+				EditableLocalPose[SelectedBoneIndex] = MatrixToTransform(SelectedBone.RefLocalMatrix);
 				bPoseDirty = true;
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Reset All"))
 			{
-				for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+				for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
 				{
-					EditableLocalPose[BoneIndex] = MockBones[BoneIndex].ReferenceLocalTransform;
+					EditableLocalPose[BoneIndex] = MatrixToTransform(SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix);
 				}
 				bPoseDirty = true;
 			}
@@ -227,79 +247,32 @@ void FSkeletalMeshViewerPanel::OnRender()
 	ImGui::End();
 }
 
-void FSkeletalMeshViewerPanel::CreateMockSkeleton()
+void FSkeletalMeshViewerPanel::BuildBoneHierarchy()
 {
-	bPoseDirty = true;
-	MockBones.Reset();
-	EditableLocalPose.Reset();
-	GlobalPose.Reset();
-	SelectedBoneIndex = -1;
-
-	AddMockBone("Root", -1, FVector(0.0f, 0.0f, 0.0f));
-	AddMockBone("Pelvis", 0, FVector(0.0f, 0.0f, 1.0f));
-	AddMockBone("Spine", 1, FVector(0.0f, 0.0f, 0.7f));
-	AddMockBone("Chest", 2, FVector(0.0f, 0.0f, 0.7f));
-	AddMockBone("Neck", 3, FVector(0.0f, 0.0f, 0.45f));
-	AddMockBone("Head", 4, FVector(0.0f, 0.0f, 0.35f));
-	AddMockBone("LeftUpperArm", 3, FVector(0.0f, -0.55f, 0.3f));
-	AddMockBone("LeftLowerArm", 6, FVector(0.0f, -0.7f, 0.0f));
-	AddMockBone("LeftHand", 7, FVector(0.0f, -0.6f, 0.0f));
-	AddMockBone("RightUpperArm", 3, FVector(0.0f, 0.55f, 0.3f));
-	AddMockBone("RightLowerArm", 9, FVector(0.0f, 0.7f, 0.0f));
-	AddMockBone("RightHand", 10, FVector(0.0f, 0.6f, 0.0f));
-	AddMockBone("LeftUpperLeg", 1, FVector(0.0f, -0.25f, -0.75f));
-	AddMockBone("LeftLowerLeg", 12, FVector(0.0f, 0.0f, -0.85f));
-	AddMockBone("LeftFoot", 13, FVector(0.3f, 0.0f, -0.75f));
-	AddMockBone("RightUpperLeg", 1, FVector(0.0f, 0.25f, -0.75f));
-	AddMockBone("RightLowerLeg", 15, FVector(0.0f, 0.0f, -0.85f));
-	AddMockBone("RightFoot", 16, FVector(0.3f, 0.0f, -0.75f));
-
-	BuildMockBoneHierarchy();
-	if (!MockRootBones.IsEmpty())
+	BoneChildren.Reset();
+	RootBones.Reset();
+	BoneChildren.SetNum(SkeletalMesh->MeshData.RefBones.Num());
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
 	{
-		SelectedBoneIndex = MockRootBones[0];
-	}
-}
-
-void FSkeletalMeshViewerPanel::AddMockBone(const char* Name, int32 ParentIndex, const FVector& LocalLocation)
-{
-	FMockBone Bone;
-	Bone.Name = Name;
-	Bone.ParentIndex = ParentIndex;
-
-	FTransform LocalTransform(FRotator(0.0f, 0.0f, 0.0f), LocalLocation);
-	Bone.ReferenceLocalTransform = LocalTransform;
-	EditableLocalPose.Add(LocalTransform);
-
-	MockBones.Add(Bone);
-}
-
-void FSkeletalMeshViewerPanel::BuildMockBoneHierarchy()
-{
-	MockBoneChildren.Reset();
-	MockRootBones.Reset();
-	MockBoneChildren.SetNum(MockBones.Num());
-	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
-	{
-		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
 		if (ParentIndex < 0)
 		{
-			MockRootBones.Add(BoneIndex);
+			RootBones.Add(BoneIndex);
 			continue;
 		}
-		if (MockBones.IsValidIndex(ParentIndex))
+		if (SkeletalMesh->MeshData.RefBones.IsValidIndex(ParentIndex))
 		{
-			MockBoneChildren[ParentIndex].Add(BoneIndex);
+			BoneChildren[ParentIndex].Add(BoneIndex);
 		}
 	}
 }
 
 void FSkeletalMeshViewerPanel::DrawBoneNode(int32 BoneIndex)
 {
-	if (!MockBones.IsValidIndex(BoneIndex))
+	if (!SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex))
 		return;
-	const FMockBone& Bone = MockBones[BoneIndex];
-	const bool bHasChildren = !MockBoneChildren[BoneIndex].IsEmpty();
+	const FSkeletalMeshRefBone& Bone = SkeletalMesh->MeshData.RefBones[BoneIndex];
+	const bool bHasChildren = !BoneChildren[BoneIndex].IsEmpty();
 
 	ImGuiTreeNodeFlags Flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick | ImGuiTreeNodeFlags_SpanAvailWidth;
 	if (SelectedBoneIndex == BoneIndex)
@@ -317,7 +290,8 @@ void FSkeletalMeshViewerPanel::DrawBoneNode(int32 BoneIndex)
 	}
 
 	ImGui::PushID(BoneIndex);
-	const bool bOpen = ImGui::TreeNodeEx("##BoneNode", Flags, "%s", Bone.Name.c_str());
+	const FString BoneName = Bone.Name.ToString();
+	const bool bOpen = ImGui::TreeNodeEx("##BoneNode", Flags, "%s", BoneName.c_str());
 	if (ImGui::IsItemClicked())
 	{
 		SelectedBoneIndex = BoneIndex;
@@ -325,7 +299,7 @@ void FSkeletalMeshViewerPanel::DrawBoneNode(int32 BoneIndex)
 
 	if (bOpen && bHasChildren)
 	{
-		for (int32 ChildIndex : MockBoneChildren[BoneIndex])
+		for (int32 ChildIndex : BoneChildren[BoneIndex])
 		{
 			DrawBoneNode(ChildIndex);
 		}
@@ -495,18 +469,22 @@ void FSkeletalMeshViewerPanel::ReleaseSkeletalPreviewInput()
 
 void FSkeletalMeshViewerPanel::RebuildGlobalPose()
 {
-	if (EditableLocalPose.Num() != MockBones.Num())
+	if (!SkeletalMesh)
+	{
+		return;
+	}
+	if (EditableLocalPose.Num() != SkeletalMesh->MeshData.RefBones.Num())
 	{
 		GlobalPose.Reset();
 		bPoseDirty = false;
 		return;
 	}
 
-	GlobalPose.SetNum(MockBones.Num());
-	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	GlobalPose.SetNum(SkeletalMesh->MeshData.RefBones.Num());
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
 	{
 		const FMatrix LocalMatrix = EditableLocalPose[BoneIndex].GetLocalMatrix();
-		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
 		if (GlobalPose.IsValidIndex(ParentIndex) && ParentIndex < BoneIndex)
 		{
 			GlobalPose[BoneIndex] = LocalMatrix * GlobalPose[ParentIndex];
@@ -522,7 +500,7 @@ void FSkeletalMeshViewerPanel::RebuildGlobalPose()
 
 void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 {
-	if (GlobalPose.Num() != MockBones.Num())
+	if (!SkeletalMesh || GlobalPose.Num() != SkeletalMesh->MeshData.RefBones.Num())
 	{
 		return;
 	}
@@ -530,7 +508,7 @@ void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 	constexpr float BoneRadius = 0.05f;
 	constexpr int32 SphereSegments = 16;
 
-	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
 	{
 		const FVector BonePosition = GetBoneGlobalPosition(BoneIndex);
 		if (!GlobalPose.IsValidIndex(BoneIndex) || !IsFiniteVector(BonePosition))
@@ -544,7 +522,7 @@ void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 			: FVector4(0.5f, 0.8f, 1.0f, 1.0f);
 		AddWireSphere(LineBatcher, BonePosition, BoneRadius, SphereSegments, JointColor);
 
-		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
 		const FVector ParentPosition = GetBoneGlobalPosition(ParentIndex);
 		if (!GlobalPose.IsValidIndex(ParentIndex) || !IsFiniteVector(ParentPosition))
 		{
@@ -597,15 +575,15 @@ FVector FSkeletalMeshViewerPanel::GetBoneGlobalPosition(int32 BoneIndex) const
 
 bool FSkeletalMeshViewerPanel::IsBoneValid(int32 BoneIndex) const
 {
-	return MockBones.IsValidIndex(BoneIndex) 
+	return SkeletalMesh && SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex)
 		&& EditableLocalPose.IsValidIndex(BoneIndex) 
 		&& GlobalPose.IsValidIndex(BoneIndex);
 }
 
 int32 FSkeletalMeshViewerPanel::GetBoneParentIndex(int32 BoneIndex) const
 {
-	return MockBones.IsValidIndex(BoneIndex) 
-		? MockBones[BoneIndex].ParentIndex 
+	return SkeletalMesh && SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex)
+		? SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex
 		: -1;
 }
 
@@ -692,12 +670,16 @@ void FSkeletalMeshViewerPanel::UpdateBoneGizmoInput(bool bInputEnabled)
 
 int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const
 {
+	if (!SkeletalMesh)
+	{
+		return -1;
+	}
 	constexpr float PickBoneRadius = 7.0f;
 	constexpr float PickjointRadius = 15.0f;
 	int32 PickedBoneIndex = -1;
 	float NearestDistance = PickjointRadius;
 
-	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
 	{
 		const FVector2 JointScreenPosition = WorldToScreen(GetBoneGlobalPosition(BoneIndex), ViewProjection, ScreenWidth, ScreenHeight);
 		const FVector2 Difference = MousePosition - JointScreenPosition;
@@ -715,9 +697,9 @@ int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FM
 
 	NearestDistance = PickBoneRadius;
 
-	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
 	{
-		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		const int32 ParentIndex = SkeletalMesh->MeshData.RefBones[BoneIndex].ParentIndex;
 		if (ParentIndex < 0)
 		{
 			continue;
@@ -734,4 +716,23 @@ int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FM
 		}
 	}
 	return PickedBoneIndex;
+}
+void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
+{
+	SkeletalMesh = InSkeletalMesh;
+	EditableLocalPose.Reset();
+	GlobalPose.Reset();
+	SelectedBoneIndex = -1;
+
+	for (const FSkeletalMeshRefBone& Bone : SkeletalMesh->MeshData.RefBones)
+	{
+		EditableLocalPose.Add(MatrixToTransform(Bone.RefLocalMatrix));
+	}
+
+	BuildBoneHierarchy();
+	if (!RootBones.IsEmpty())
+	{
+		SelectedBoneIndex = RootBones[0];
+	}
+	bPoseDirty = true;
 }

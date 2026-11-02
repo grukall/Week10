@@ -9,6 +9,7 @@
 #include "Editor/Gizmo/Gizmo.h"
 #include "Editor/Gizmo/BoneGizmoTarget.h"
 
+class USkeletalMesh;
 class AStaticMeshActor;
 class ADirectionalLightActor;
 class AAmbientLightActor;
@@ -50,34 +51,29 @@ public:
 	FGizmo* GetBoneGizmo() const { return BoneGizmo.get(); }
 	void UpdateBoneGizmoInput(bool bInputEnabled);
 
-private:
-	// 임시 Skeleton 데이터
-	// 나중에 Bone 데이터랑 연결
-	struct FMockBone
-	{
-		FString Name;
-		int32 ParentIndex = -1;
-		FTransform ReferenceLocalTransform;
-	};
-	void CreateMockSkeleton();
-	void AddMockBone(const char* Name, int32 ParentIndex, const FVector& LocalLocation);
-	TArray<FMockBone> MockBones;
+	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
 
+private:
+	void BuildBoneHierarchy();
+	void DrawBoneNode(int32 BoneIndex);
+	void CreateDefaultSkeletalPreviewScene();
+	int32 PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const;
+
+
+private:
+	USkeletalMesh* SkeletalMesh = nullptr;
 	TArray<FTransform> EditableLocalPose; // 수정할 현재 자세
 	TArray<FMatrix> GlobalPose;
 	int32 SelectedBoneIndex = -1;         // 현재 선택된 BoneIndex
-	bool bPoseDirty = true;
+	bool bPoseDirty = false;
 
-	void BuildMockBoneHierarchy();
-	void DrawBoneNode(int32 BoneIndex);
-	TArray<TArray<int32>> MockBoneChildren;
-	TArray<int32> MockRootBones;
+	TArray<TArray<int32>> BoneChildren;
+	TArray<int32> RootBones;
 
 	TUniquePtr<FViewport> SkeletalPreviewViewport;
 	FEditorViewportClient* SkeletalPreviewClient = nullptr;
 	UWorld* SkeletalPreviewWorld = nullptr;
 
-	void CreateDefaultSkeletalPreviewScene();
 	AStaticMeshActor* SkeletalPreviewFloor = nullptr;
 	ADirectionalLightActor* SkeletalPreviewDirectionalLight = nullptr;
 	AAmbientLightActor* SkeletalPreviewAmbientLight = nullptr;
@@ -87,6 +83,4 @@ private:
 
 	TUniquePtr<FGizmo> BoneGizmo;
 	TUniquePtr<FBoneGizmoTarget> BoneGizmoTarget;
-
-	int32 PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const;
 };
