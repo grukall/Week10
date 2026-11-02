@@ -70,22 +70,22 @@ void FBoneGizmoTarget::BeginTransformEdit()
 		return;
 	}
 
-	StartWorldMatrix = Viewer->GetBoneGlobalMatrix(EditingBoneIndex);
+	StartGlobalMatrix = Viewer->GetBoneGlobalMatrix(EditingBoneIndex);
 	StartLocalTransform = Viewer->GetBoneLocalTransform(EditingBoneIndex);
-	StartWorldRotation = ExtractRotation(StartWorldMatrix);
+	StartGlobalRotation = ExtractRotation(StartGlobalMatrix);
 
 	ParentBoneIndex = Viewer->GetBoneParentIndex(EditingBoneIndex);
 
 	if (Viewer->IsBoneValid(ParentBoneIndex))
 	{
-		ParentWorldMatrix = Viewer->GetBoneGlobalMatrix(ParentBoneIndex);
-		ParentWorldRotation = ExtractRotation(ParentWorldMatrix);
+		ParentGlobalMatrix = Viewer->GetBoneGlobalMatrix(ParentBoneIndex);
+		ParentGlobalRotation = ExtractRotation(ParentGlobalMatrix);
 	}
 	else
 	{
 		ParentBoneIndex = -1;
-		ParentWorldMatrix = FMatrix::Identity;
-		ParentWorldRotation = FQuat::Identity();
+		ParentGlobalMatrix = FMatrix::Identity;
+		ParentGlobalRotation = FQuat::Identity();
 	}
 	bEditing = true;
 }
@@ -102,19 +102,19 @@ void FBoneGizmoTarget::ApplyTransformDelta(const FGizmoTransformDelta& Delta)
 	{
 	case EGizmoMode::Location:
 	{
-		const FVector StartWorldLocation(StartWorldMatrix[3][0], StartWorldMatrix[3][1], StartWorldMatrix[3][2]);
+		const FVector StartWorldLocation(StartGlobalMatrix[3][0], StartGlobalMatrix[3][1], StartGlobalMatrix[3][2]);
 		const FVector NewWorldLocation = StartWorldLocation + Delta.TranslationDelta;
 
 		NewLocalTransform.Location = ParentBoneIndex >= 0
-									? ParentWorldMatrix.Inverse().TransformPosition(NewWorldLocation)
+									? ParentGlobalMatrix.Inverse().TransformPosition(NewWorldLocation)
 									: NewWorldLocation;
 		break;
 	}
 	case EGizmoMode::Rotation:
 	{
-		const FQuat NewWorldRotation = (Delta.RotationDelta * StartWorldRotation).Normalized();
+		const FQuat NewWorldRotation = (Delta.RotationDelta * StartGlobalRotation).Normalized();
 		const FQuat NewLocalRotation = ParentBoneIndex >= 0 
-									? ParentWorldRotation.Inverse() * NewWorldRotation 
+									? ParentGlobalRotation.Inverse() * NewWorldRotation 
 									: NewWorldRotation;
 		NewLocalTransform.Rotation = NewLocalRotation.Normalized().ToFRotator();
 		break;

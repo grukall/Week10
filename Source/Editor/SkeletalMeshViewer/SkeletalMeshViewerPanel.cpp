@@ -65,6 +65,12 @@ namespace
 
 bool FSkeletalMeshViewerPanel::Init()
 {
+	BoneGizmo = MakeUnique<FGizmo>();
+	BoneGizmoTarget = MakeUnique<FBoneGizmoTarget>(this);
+	BoneGizmo->SetTarget(BoneGizmoTarget.get());
+	BoneGizmo->SetMode(EGizmoMode::Location);
+	BoneGizmo->SetSpace(EGizmoSpace::Local);
+
 	CreateMockSkeleton();
 	return true;
 }
@@ -90,6 +96,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 
 	if (!bVisible)
 	{
+		SkeletalPreviewScreenRect = {};
 		if (SkeletalPreviewViewport)
 		{
 			SkeletalPreviewViewport->SetOutputSize(0, 0);
@@ -361,6 +368,17 @@ void FSkeletalMeshViewerPanel::ShutdownSkeletalPreview()
 	SkeletalPreviewClient = nullptr;
 	SkeletalPreviewViewport.reset();
 	SkeletalPreviewWorld = nullptr;
+
+	if (BoneGizmo)
+	{
+		BoneGizmo->SetTarget(nullptr);
+	}
+	if (BoneGizmoTarget)
+	{
+		BoneGizmoTarget->SetViewer(nullptr);
+	}
+	BoneGizmoTarget.reset();
+	BoneGizmo.reset();
 }
 
 
@@ -463,9 +481,15 @@ void FSkeletalMeshViewerPanel::RouteSkeletalPreviewInput(FViewportInput Input)
 void FSkeletalMeshViewerPanel::ReleaseSkeletalPreviewInput()
 {
 	bSkeletalPreviewCaptured = false;
+
 	if (SkeletalPreviewViewport)
 	{
 		SkeletalPreviewViewport->UpdateInput({});
+	}
+
+	if (BoneGizmo && BoneGizmo->IsUsing())
+	{
+		BoneGizmo->EndDrag();
 	}
 }
 
@@ -594,4 +618,107 @@ void FSkeletalMeshViewerPanel::SetBoneLocalTransform(int32 BoneIndex, const FTra
 	}
 	EditableLocalPose[BoneIndex] = Transform;
 	bPoseDirty = true;
+}
+
+void FSkeletalMeshViewerPanel::UpdateBoneGizmoInput(bool bInputEnabled)
+{
+	if (!BoneGizmo)
+	{
+		return;
+	}
+	if (!bInputEnabled || !CanRenderSkeletalPreview())
+	{
+		BoneGizmo->EndDrag();
+		return;
+	}
+
+	const bool bCanInteract = IsSkeletalPreviewHovered() || BoneGizmo->IsUsing();
+	if (!bCanInteract)
+	{
+		BoneGizmo->EndDrag();
+		return;
+	}
+
+	if (!BoneGizmo->IsUsing() && FInputSystem::IsKeyPressed(EKeyCode::Space))
+	{
+		const int NextMode = (static_cast<int>(BoneGizmo->GetMode()) + 1) % 3;
+		BoneGizmo->SetMode(static_cast<EGizmoMode>(NextMode));
+	}
+
+	POINT Mouse{};
+	if (!SkeletalPreviewScreenRect.IsValid() || !::GetCursorPos(&Mouse))
+	{
+		BoneGizmo->EndDrag();
+		return;
+	}
+
+	const FVector2 PreviewMousePosition(
+		static_cast<float>(Mouse.x) - SkeletalPreviewScreenRect.X,
+		static_cast<float>(Mouse.y) - SkeletalPreviewScreenRect.Y);
+
+	const FSceneView View = SkeletalPreviewViewport->CreateSceneView();
+	const FRect& ViewRect = View.ViewRect;
+	if (ViewRect.Width <= 0.0f || ViewRect.Height <= 0.0f)
+	{
+		return;
+	}
+
+	const FRay MouseRay = View.Deproject(PreviewMousePosition);
+	const bool bLeftMousePressed = FInputSystem::IsMousePressed(EMouseButton::Left);
+	BoneGizmo->Update(MouseRay, PreviewMousePosition, View.ViewProjection, static_cast<int>(ViewRect.Width), static_cast<int>(ViewRect.Height),
+		FInputSystem::IsMouseDown(EMouseButton::Left), View.GetCameraLocation(), View.IsOrthographic());
+
+	const bool bGizmoBlocksPick = BoneGizmo->IsUsing() || BoneGizmo->GetHoveredAxis() >= 0;
+	if (bLeftMousePressed && !bGizmoBlocksPick)
+	{
+		const int32 PickedBoneIndex = PickBone(PreviewMousePosition, View.ViewProjection, 
+			static_cast<int32>(ViewRect.Width), static_cast<int32>(ViewRect.Height));
+		SelectedBoneIndex = PickedBoneIndex;
+	}
+}
+
+int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const
+{
+	constexpr float PickBoneRadius = 10.0f;
+	constexpr float PickjointRadius = 6.0f;
+	int32 PickedBoneIndex = -1;
+	float NearestDistance = PickjointRadius;
+
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	{
+		const FVector2 JointScreenPosition = WorldToScreen(GetBoneGlobalPosition(BoneIndex), ViewProjection, ScreenWidth, ScreenHeight);
+		const FVector2 Difference = MousePosition - JointScreenPosition;
+		const float Distance = sqrtf(Difference.X * Difference.X + Difference.Y * Difference.Y);
+		if (Distance < NearestDistance)
+		{
+			NearestDistance = Distance;
+			PickedBoneIndex = BoneIndex;
+		}
+	}
+	if (PickedBoneIndex >= 0)
+	{
+		return PickedBoneIndex;
+	}
+
+	NearestDistance = PickBoneRadius;
+
+	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(MockBones.Num()); ++BoneIndex)
+	{
+		const int32 ParentIndex = MockBones[BoneIndex].ParentIndex;
+		if (ParentIndex < 0)
+		{
+			continue;
+		}
+
+		const FVector2 ParentScreenPosition = WorldToScreen(GetBoneGlobalPosition(ParentIndex), ViewProjection, ScreenWidth, ScreenHeight);
+		const FVector2 BoneScreenPosition = WorldToScreen(GetBoneGlobalPosition(BoneIndex), ViewProjection, ScreenWidth, ScreenHeight);
+
+		const float Distance = DistanceToSegment(MousePosition, ParentScreenPosition, BoneScreenPosition);
+		if (Distance < NearestDistance)
+		{
+			NearestDistance = Distance;
+			PickedBoneIndex = BoneIndex;
+		}
+	}
+	return PickedBoneIndex;
 }

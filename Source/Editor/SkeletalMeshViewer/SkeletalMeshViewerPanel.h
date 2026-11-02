@@ -6,6 +6,8 @@
 #include "Math/Transform.h"
 #include "Editor/Viewports/EditorViewportClient.h"
 #include "Engine/Viewport.h"
+#include "Editor/Gizmo/Gizmo.h"
+#include "Editor/Gizmo/BoneGizmoTarget.h"
 
 class AStaticMeshActor;
 class ADirectionalLightActor;
@@ -45,6 +47,9 @@ public:
 	FMatrix GetBoneGlobalMatrix(int32 BoneIndex) const;
 	void SetBoneLocalTransform(int32 BoneIndex, const FTransform& Transform);
 
+	FGizmo* GetBoneGizmo() const { return BoneGizmo.get(); }
+	void UpdateBoneGizmoInput(bool bInputEnabled);
+
 private:
 	// 임시 Skeleton 데이터
 	// 나중에 Bone 데이터랑 연결
@@ -79,4 +84,9 @@ private:
 
 	FRect SkeletalPreviewScreenRect{};
 	bool bSkeletalPreviewCaptured = false;
+
+	TUniquePtr<FGizmo> BoneGizmo;
+	TUniquePtr<FBoneGizmoTarget> BoneGizmoTarget;
+
+	int32 PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const;
 };

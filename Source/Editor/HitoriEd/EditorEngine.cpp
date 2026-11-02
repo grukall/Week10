@@ -241,6 +241,9 @@ bool UEditorEngine::Init()
 
 	EditorControlsPanel->SetWorld(GetActiveWorld());
 	EditorControlsPanel->SetIsPlayingQuery([this]() { return IsPlaying(); });
+	EditorControlsPanel->SetIsBoneGizmoQuery([this](){ 
+		return !SkeletalMeshViewerPanel->IsSkeletalPreviewHovered()
+			&& !SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured(); });
 	EditorControlsPanel->SetGizmo(Gizmo.get());
 	EditorControlsPanel->SetViewportsPanel(ViewportsPanel);
 
@@ -508,6 +511,7 @@ void UEditorEngine::UpdateEditorViewportState(const float DeltaTime)
     }
 
 	SkeletalMeshViewerPanel->UpdateSkeletalPreviewInput();
+	SkeletalMeshViewerPanel->UpdateBoneGizmoInput(bEditorInputEnabled);
 	const bool bSkeletalPreviewWantInput = SkeletalMeshViewerPanel->IsSkeletalPreviewCaptured()
 		|| SkeletalMeshViewerPanel->IsSkeletalPreviewHovered();
 	if (bSkeletalPreviewWantInput)
@@ -852,8 +856,17 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 		//FBox box = Target->CalcBounds();
 
 		RenderCommand::ClearDepthStencil(ViewRenderingInfo.DepthStencil.Texture);
-
 		GizmoRenderer->OnRender(*Gizmo, ViewProjection, ViewCameraLocation, View.IsOrthographic());
+	}
+
+	if (bShowSkeletalPreviewOverlay && !Settings.bDepthView)
+	{
+		FGizmo* BoneGizmo = SkeletalMeshViewerPanel->GetBoneGizmo();
+		if (BoneGizmo && BoneGizmo->HasValidTarget())
+		{
+			RenderCommand::ClearDepthStencil(ViewRenderingInfo.DepthStencil.Texture);
+			GizmoRenderer->OnRender(*BoneGizmo, ViewProjection, ViewCameraLocation, View.IsOrthographic());
+		}
 	}
 
 	RenderCommand::ClearDepthStencil(PassInfo.DepthStencil.Texture);

@@ -25,10 +25,10 @@ private:
 	int32 ParentBoneIndex = -1;
 
 	FTransform StartLocalTransform = FTransform::Identity;
-	FMatrix StartWorldMatrix = FMatrix::Identity;
-	FMatrix ParentWorldMatrix = FMatrix::Identity;
-	FQuat StartWorldRotation = FQuat::Identity();
-	FQuat ParentWorldRotation = FQuat::Identity();
+	FMatrix StartGlobalMatrix = FMatrix::Identity;
+	FMatrix ParentGlobalMatrix = FMatrix::Identity;
+	FQuat StartGlobalRotation = FQuat::Identity();
+	FQuat ParentGlobalRotation = FQuat::Identity();
 
 	bool bEditing = false;
 };
