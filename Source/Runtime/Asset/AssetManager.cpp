@@ -10,6 +10,8 @@
 #include "Render/RenderResourceManager.h"
 
 #include "Asset/ObjImporter/ObjImporter.h"
+#include "Asset/FbxImporter/FbxImporter.h"
+#include "Asset/FbxImporter/SkeletalMeshImportData.h"
 
 #include "Render/GeometryGenerator.h"
 #include "UObject/UObjectGlobals.h"
@@ -20,8 +22,7 @@
 
 namespace
 {
-	void SetMaterialTexture(int32 SlotIndex, UMaterial* Material,
-		const FString& TexturePath, bool bGenerateMipmaps = true, bool bSRGB = true)
+	void SetMaterialTexture(int32 SlotIndex, UMaterial* Material, const FString& TexturePath, bool bGenerateMipmaps = true, bool bSRGB = true)
 	{
 		while (static_cast<int32>(Material->Textures.Num()) <= SlotIndex)
 		{
@@ -191,6 +192,38 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	if (Extension == ".obj")
 	{
 		LoadObjStaticMesh(Path);
+	}
+	if (Extension == ".fbx")
+	{
+		TArray<FSkeletalMeshImportData> ImportGroups;
+		if (!FFbxImporter::ParseFbx(Path, ImportGroups))
+			return;
+
+		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, ImportGroups.Num());
+
+		for (int32 GroupIndex = 0; GroupIndex < ImportGroups.Num(); ++GroupIndex)
+		{
+			const FSkeletalMeshImportData& ImportData = ImportGroups[GroupIndex];
+
+			HTR_LOG(Info, "[FBX] File={}, Group={}, Meshes={}, Bones={}", Path, GroupIndex, ImportData.Meshes.Num(), ImportData.Skeleton.RefBones.Num());
+
+			for (const FImportedMaterial& Material : ImportData.Materials)
+			{
+				if (!Material.DiffuseTexturePath.empty())
+				{
+					if (!LoadTexture(Material.DiffuseTexturePath, true, true))
+						HTR_LOG(Warning, "[FBX Texture] Load failed: {}", Material.DiffuseTexturePath);
+				}
+
+				if (!Material.NormalTexturePath.empty())
+				{
+					if (!LoadTexture(Material.NormalTexturePath, true, false))
+						HTR_LOG(Warning, "[FBX Texture] Load failed: {}", Material.NormalTexturePath);
+				}
+			}
+		}
+
+		return;
 	}
 }
 
