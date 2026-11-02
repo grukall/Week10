@@ -25,6 +25,8 @@ IncludeDir["miniaudio"] = "Source/ThirdParty/miniaudio"
 IncludeDir["Lua"]	= "Source/ThirdParty/LuaJIT/include"
 IncludeDir["sol2"]	= "Source/ThirdParty/sol2/include"
 LuaJITLibDir = "Source/ThirdParty/LuaJIT/lib"
+IncludeDir["FBXSDK"] = "Source/ThirdParty/FBXSDK/include"
+FBXSDKLibDir = "Source/ThirdParty/FBXSDK/lib/x64"
 
 -- premake의 filter는 project()를 만나면 초기화된다.
 -- 두 프로젝트가 같은 런타임(/MDd vs /MD)으로 컴파일되지 않으면 링크가 실패하므로
@@ -108,6 +110,25 @@ function LinkLuaJIT()
 end
 
 
+-- Autodesk FBX SDK 동적 링크 및 실행 파일 옆에 DLL 복사
+function LinkFBXSDK()
+    links { "libfbxsdk" }
+
+    filter "configurations:Debug or Benchmark_Debug"
+        libdirs { FBXSDKLibDir .. "/debug" }
+        postbuildcommands {
+            '{COPYFILE} %[' .. FBXSDKLibDir .. '/debug/libfbxsdk.dll] %[%{!cfg.targetdir}]'
+        }
+
+    filter "configurations:Release or ObjViewer or Benchmark"
+        libdirs { FBXSDKLibDir .. "/release" }
+        postbuildcommands {
+            '{COPYFILE} %[' .. FBXSDKLibDir .. '/release/libfbxsdk.dll] %[%{!cfg.targetdir}]'
+        }
+
+    filter {}
+end
+
 -- 외부 라이브러리. 별도 프로젝트로 두면 에디터의 소스 루트가 Source/Editor 하나로 좁혀져
 -- Solution Explorer의 "모든 파일 표시"에서 폴더 구조가 그대로 보인다.
 project "ImGui"
@@ -173,7 +194,8 @@ project "HitoriEngine"
 		"%{IncludeDir.stb}",
 		"%{IncludeDir.json}",
 		"%{IncludeDir.Lua}",
-		"%{IncludeDir.sol2}"
+		"%{IncludeDir.sol2}",
+		"%{IncludeDir.FBXSDK}"
 	}
 	includedirs { "%{IncludeDir.miniaudio}" }
 	files { "%{IncludeDir.miniaudio}/miniaudio.h", "%{IncludeDir.miniaudio}/LICENSE" }
@@ -193,6 +215,7 @@ project "HitoriEngine"
 		-- 그러면 메시지가 "C++ exception"으로 바뀐다. sol2가 직접 잡아 e.what()을 Lua 에러로 만들게 한다.
 		"SOL_EXCEPTIONS_SAFE_PROPAGATION=0",
 		"SOL_LUAJIT=1",
+		"FBXSDK_SHARED",
 	}
 
 	buildoptions
@@ -218,6 +241,7 @@ project "HitoriEditor"
 		"Source/Programs/**.h",
 		"Source/Programs/**.cpp",
 		"Source/Editor/**.rc",   -- 창·exe 아이콘
+		"Resources/Hitori.manifest", -- 파일 경로의 프로세스 코드페이지를 UTF-8로 통일
 	}
 
 	includedirs
@@ -243,6 +267,7 @@ project "HitoriEditor"
 		"ImGui",
 	}
 	LinkLuaJIT()
+	LinkFBXSDK()
 
 	defines
 	{
@@ -288,6 +313,7 @@ project "HitoriGame"
 	{
 		"Source/Game/**.h",
 		"Source/Game/**.cpp",
+		"Resources/Hitori.manifest",
 	}
 
 	includedirs
@@ -307,6 +333,7 @@ project "HitoriGame"
 		"d3dcompiler.lib",
 	}
 	LinkLuaJIT()
+	LinkFBXSDK()
 
 	-- sol2 설정은 엔진·에디터와 같아야 한다. 다르면 같은 sol2 템플릿이 프로젝트마다 다르게 컴파일된다.
 	defines

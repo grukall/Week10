@@ -453,3 +453,6 @@ editor.ini
 # LuaJIT 정적 lib은 빌드 결과물이 아니라 저장소에 넣어 두는 외부 라이브러리
 !Source/ThirdParty/LuaJIT/lib/Debug/
 !Source/ThirdParty/LuaJIT/lib/Release
+
+# Autodesk FBX SDK
+/Source/ThirdParty/FBXSDK/

@@ -10,6 +10,11 @@
 #include "Render/RenderResourceManager.h"
 
 #include "Asset/ObjImporter/ObjImporter.h"
+#include "Asset/FbxImporter/FbxImporter.h"
+#include "Asset/FbxImporter/SkeletalMeshBuilder.h"
+#include "Asset/FbxImporter/SkeletalMeshImportData.h"
+#include "Render/SkeletalMesh.h"
+
 
 #include "Render/GeometryGenerator.h"
 #include "UObject/UObjectGlobals.h"
@@ -17,11 +22,12 @@
 #include "Render/ImageLoader.h"
 #include "Core/ResourcePaths.h"
 
+#include <string>
+#include <utility>
 
 namespace
 {
-	void SetMaterialTexture(int32 SlotIndex, UMaterial* Material,
-		const FString& TexturePath, bool bGenerateMipmaps = true, bool bSRGB = true)
+	void SetMaterialTexture(int32 SlotIndex, UMaterial* Material, const FString& TexturePath, bool bGenerateMipmaps = true, bool bSRGB = true)
 	{
 		while (static_cast<int32>(Material->Textures.Num()) <= SlotIndex)
 		{
@@ -112,6 +118,20 @@ namespace
 		return Mesh;
 	}
 
+	USkeletalMesh* CreateSkeletalMesh(FSkeletalMeshData&& Data)
+	{
+		if (Data.Vertices.IsEmpty() || Data.Indices.IsEmpty() ||
+			Data.RefBones.IsEmpty())
+			return nullptr;
+
+		USkeletalMesh* Mesh = NewObject<USkeletalMesh>();
+		if (!Mesh)
+			return nullptr;
+
+		Mesh->MeshData = std::move(Data);
+		return Mesh;
+	}
+
 	FString MakeAssetKey(const FString& Path)
 	{
 		return fs::relative(Path, "Assets").generic_string();
@@ -191,6 +211,67 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	if (Extension == ".obj")
 	{
 		LoadObjStaticMesh(Path);
+	}
+	if (Extension == ".fbx")
+	{
+		TArray<FSkeletalMeshImportData> ImportGroups;
+		if (!FFbxImporter::ParseFbx(Path, ImportGroups))
+			return;
+
+		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, ImportGroups.Num());
+
+		for (int32 GroupIndex = 0; GroupIndex < ImportGroups.Num(); ++GroupIndex)
+		{
+			const FSkeletalMeshImportData& ImportData = ImportGroups[GroupIndex];
+			const FString GroupKey =
+				Key + "#Group" + std::to_string(GroupIndex);
+
+			FSkeletalMeshData MeshData;
+			if (!FSkeletalMeshBuilder::Build(ImportData, MeshData))
+			{
+				HTR_LOG(Error, "[FBX] Build failed: File={}, Group={}",
+					Path, GroupIndex);
+				continue;
+			}
+
+			USkeletalMesh* Mesh = CreateSkeletalMesh(std::move(MeshData));
+			if (!Mesh)
+			{
+				HTR_LOG(Error, "[FBX] Asset creation failed: File={}, Group={}",
+					Path, GroupIndex);
+				continue;
+			}
+
+			RegisterAsset(GroupKey, Mesh);
+			AssetPathMap.Add(GroupKey, Path);
+
+			HTR_LOG(Info,
+				"[FBX] Registered: Key={}, Meshes={}, Vertices={}, Bones={}",
+				GroupKey,
+				ImportData.Meshes.Num(),
+				Mesh->MeshData.Vertices.Num(),
+				Mesh->MeshData.RefBones.Num());
+
+			// 지금은 텍스처를 미리 로드한다. 실제 재질 연결은 이후 작업.
+			for (const FImportedMaterial& Material : ImportData.Materials)
+			{
+				if (!Material.DiffuseTexturePath.empty() &&
+					!LoadTexture(Material.DiffuseTexturePath, true, true))
+				{
+					HTR_LOG(Warning, "[FBX Texture] Load failed: {}",
+						Material.DiffuseTexturePath);
+				}
+
+				if (!Material.NormalTexturePath.empty() &&
+					!LoadTexture(Material.NormalTexturePath, true, false))
+				{
+					HTR_LOG(Warning, "[FBX Texture] Load failed: {}",
+						Material.NormalTexturePath);
+				}
+			}
+		}
+
+		return;
 	}
 }
 

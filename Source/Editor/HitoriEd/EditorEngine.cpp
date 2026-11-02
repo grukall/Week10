@@ -337,7 +337,7 @@ bool UEditorEngine::Init()
 	const ImVec4 White = { 1, 1, 1, 1 };
 	const ImVec4 Green = { 0.40f, 0.80f, 0.30f, 1.0f };
 
-	Save = { "Save",   "Save Current Scene",UAssetManager::Get().LoadTexture(EditorResourcePaths::ToolbarSaveIcon),  White, { EKeyCode::S, true } };
+	Save = { "Save",   "Save Current Scene", nullptr,  White, { EKeyCode::S, true } };
 
 	Play = { "Play",   "Play World",        UAssetManager::Get().LoadTexture(EditorResourcePaths::ToolbarPlayIcon),  Green, { EKeyCode::P, false, true } };
 
