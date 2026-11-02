@@ -96,7 +96,8 @@ public:
 
 	static void SetRasterizerState(ERasterizerState State);
 	static void SetBlendState(EBlendState State);
-	static void SetDepthStencilState(EDepthStencilState State);
+	// StencilRef는 스텐실을 쓰는 상태(REPLACE)에서 쓸 값이고, 비교하는 상태(EQUAL 등)에서 비교할 값이다.
+	static void SetDepthStencilState(EDepthStencilState State, uint32 StencilRef = 0);
 	static void BindSamplerState(uint32 Slot, ESamplerState SamplerState, EShaderBindFlagBits FlagBits);
 
 	inline static void SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY Topology)

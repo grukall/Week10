@@ -368,7 +368,8 @@ void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, 
 	RenderCommand::BindShaderProgram(DeferredDecalShader);
 	// 카메라가 박스 안에 들어가도 사라지지 않도록 뒷면만 그린다. 뒷면은 대개 벽 속에 있어 깊이 테스트는 하지 않는다.
 	RenderCommand::SetRasterizerState(ERasterizerState::SolidFront);
-	RenderCommand::SetDepthStencilState(EDepthStencilState::Disabled);
+	// 스텐실은 데칼 수신 비트가 0(받음)인 픽셀만 통과시킨다
+	RenderCommand::SetDepthStencilState(EDepthStencilState::DeferredDecalTest);
 	RenderCommand::BindShaderResource(DecalSceneDepthSlot, SceneDepth, EShaderBindFlagBits::Pixel);
 	RenderCommand::BindMesh(BoxMesh, 0);
 	const uint32 BoxIndexCount = BoxMesh->GetIndexBuffer(0)->GetIndexCount();
@@ -390,7 +391,7 @@ void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Deca
 {
 	RenderCommand::BindShaderProgram(DecalMeshShader);
 	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
-	RenderCommand::SetDepthStencilState(EDepthStencilState::ReadOnlyLessEqual);
+	RenderCommand::SetDepthStencilState(EDepthStencilState::DecalMeshTest);
 	RenderCommand::BindConstantBuffer(0, ViewCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
 
 	auto BindObject = [this](uint32 Slot, const FMatrix& World, const FMatrix& NormalMatrix)
@@ -418,6 +419,8 @@ void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Deca
 			RenderCommand::BindMesh(Group->Mesh, Group->LODIndex);
 			for (const FStaticDrawItem& Item : Group->Items)
 			{
+				if (!Item.Proxy->ReceivesDecal()) continue;
+
 				BindObject(Item.Slot, Item.Proxy->GetLocalToWorld(), Item.Proxy->GetNormalMatrix());
 				RenderCommand::DrawIndexed(Item.IndexCount, Item.StartIndex);
 			}
@@ -427,6 +430,9 @@ void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Deca
 		{
 			const FRenderPacket& Packet = RenderPackets[SortEntries[k].PacketIndex];
 			if (!UsesDepthPrepass(Packet.Material)) continue;
+
+			if (!Packet.Proxy || !Packet.Proxy->ReceivesDecal()) continue;
+
 			RenderCommand::BindMesh(Packet.Mesh, Packet.LODIndex);
 			BindObject(Packet.Slot, GetPacketWorld(Packet), GetPacketNormalMatrix(Packet));
 			RenderCommand::DrawIndexed(Packet.IndexCount ? Packet.IndexCount : Packet.Mesh->GetIndexBuffer(Packet.LODIndex)->GetIndexCount(), Packet.StartIndex);
@@ -460,6 +466,17 @@ void FRenderer::RenderTranslucent(const FMatrix& ViewProjection)
 	StaticGroups.clear();   // 묶음 메모리는 World 것이므로 이번 프레임이 끝나면 놓는다
 }
 
+// 데칼 수신 비트는 깊이를 처음 쓰는 패스에서만 기록한다. Lit은 Prepass, Unlit은 불투명 Color 패스다.
+// 나머지 패스는 BindMaterial이 고른 깊이 상태(LessEqual 읽기 전용, 반투명 ReadOnly)를 그대로 써야 한다.
+static bool ShouldWriteDecalStencil(const UMaterial* Material, ESceneMeshPass Pass)
+{
+	if (Pass == ESceneMeshPass::DepthPrepass)
+		return true;
+	return Pass == ESceneMeshPass::Color && Material
+		&& Material->BlendState == EBlendState::Opaque
+		&& Material->DepthStencilState == EDepthStencilState::Default;
+}
+
 // 스태틱 메시 묶음을 정렬 키 순서로 그린다. 바인딩은 묶음마다 한 번, 항목마다는 칸 바인딩과 드로우만 한다.
 void FRenderer::DrawStaticGroups(ESceneMeshPass Pass)
 {
@@ -487,6 +504,14 @@ void FRenderer::DrawStaticGroups(ESceneMeshPass Pass)
 
 		for (const FStaticDrawItem& Item : Group->Items)
 		{
+			//Decal을 받는 경우 Stencil의 8번째 비트를 0(Decal을 받겠다는 뜻)으로 남긴다.
+			if (ShouldWriteDecalStencil(BoundMaterial, Pass))
+			{
+				const bool bRecieveDecal = Item.Proxy && Item.Proxy->ReceivesDecal();
+				const int32 Ref = bRecieveDecal ? 0 : DecalStencilBit;
+				RenderCommand::SetDepthStencilState(EDepthStencilState::DecalReceiverWrite, Ref);
+			}
+
 			if (bUsePerObjectSlots && Item.Slot != InvalidObjectSlot)
 			{
 				RenderCommand::BindConstantBufferRange(2, PerObjectSlotCB.get(), Item.Slot * PerObjectSlotConstants, PerObjectSlotConstants, EShaderBindFlagBits::Vertex);
@@ -574,6 +599,15 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 		}
 		if (Pass != ESceneMeshPass::DepthPrepass && (RenderPacket.Material != LastMaterial || RenderPacket.MaterialParamData))
 			UpdateMaterialParams(RenderPacket);
+
+		//Decal을 받는 경우 Stencil의 8번째 비트를 0(Decal을 받겠다는 뜻)으로 남긴다.
+		if (ShouldWriteDecalStencil(RenderPacket.Material, Pass))
+		{
+			const bool bRecieveDecal = RenderPacket.Proxy && RenderPacket.Proxy->ReceivesDecal();
+			const int32 Ref = bRecieveDecal ? 0 : DecalStencilBit;
+			RenderCommand::SetDepthStencilState(EDepthStencilState::DecalReceiverWrite, Ref);
+		}
+
 		if (bUsePerObjectSlots && RenderPacket.Slot != InvalidObjectSlot)
 		{
 			RenderCommand::BindConstantBufferRange(2, PerObjectSlotCB.get(), RenderPacket.Slot * PerObjectSlotConstants, PerObjectSlotConstants, EShaderBindFlagBits::Vertex);
