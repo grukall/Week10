@@ -13,6 +13,7 @@
 #include "Asset/FbxImporter/FbxImporter.h"
 #include "Asset/FbxImporter/SkeletalMeshBuilder.h"
 #include "Asset/FbxImporter/FbxImportData.h"
+#include "Asset/FbxImporter/FbxStaticMeshBuilder.h"
 #include "Render/SkeletalMesh.h"
 
 
@@ -276,9 +277,26 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	}
 	if (Extension == ".fbx" || Extension == ".FBX")
 	{
-		TArray<FSkeletalMeshImportData> ImportGroups;
-		if (!FFbxImporter::ParseFbx(Path, ImportGroups))
+		FFbxImportData ImportData;
+		if (!FFbxImporter::ParseFbx(Path, ImportData))
 			return;
+
+		if (!ImportData.StaticMesh.Meshes.IsEmpty())
+		{
+			FStaticMeshData MeshData;
+			if (!FFbxStaticMeshBuilder::Build(ImportData.StaticMesh, MeshData))
+				return;
+
+			if (UStaticMesh* Mesh = CreateStaticMesh(&MeshData))
+			{
+				RegisterAsset(Key, Mesh);
+				AssetPathMap.Add(Key, Path);
+				HTR_LOG(Info, "[FBX Static] Registered: Key={}, Vertices={}", Key, Mesh->MeshData.Vertices.Num());
+			}
+			return;
+		}
+
+		const TArray<FSkeletalMeshImportData>& ImportGroups = ImportData.SkeletalGroups;
 
 		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, ImportGroups.Num());
 

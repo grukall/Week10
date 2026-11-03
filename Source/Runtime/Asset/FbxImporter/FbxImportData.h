@@ -106,6 +106,7 @@ struct FImportedMesh
 
     // 기준 자세에서 메시 로컬 공간 → 본과 동일한 공통 기준 공간
     // FBX의 Geometry Transform도 반영해 계산해야 한다.
+    // 스태틱 메시에서는 노드의 장면 변환을 저장한다.
     FMatrix MeshToSkeletonBindMatrix = FMatrix::Identity;
 
     // 스킨 없이 본에 부착된 메시를 위한 정보
@@ -128,4 +129,17 @@ struct FSkeletalMeshImportData
 
     TArray<FImportedMesh> Meshes;
     TArray<FImportedMaterial> Materials;
+};
+
+// 순수 스태틱 FBX의 모든 메시 노드를 하나의 에셋 공간으로 합친다.
+struct FStaticMeshImportData
+{
+    TArray<FImportedMesh> Meshes;
+    TArray<FImportedMaterial> Materials;
+};
+
+struct FFbxImportData
+{
+    FStaticMeshImportData StaticMesh;
+    TArray<FSkeletalMeshImportData> SkeletalGroups;
 };

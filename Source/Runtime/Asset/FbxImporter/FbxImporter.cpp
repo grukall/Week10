@@ -355,7 +355,8 @@ namespace
     }
 
     // 메시 하나의 형상, 면별 속성, 본 가중치를 ImportData에 추가한다.
-    void ExtractMesh(FbxNode* Node, FbxMesh* Mesh, const FBoneIndexMap& BoneMap, FSkeletalMeshImportData& OutData)
+    void ExtractMesh(FbxNode* Node, FbxMesh* Mesh, const FBoneIndexMap& BoneMap,
+        TArray<FImportedMesh>& OutMeshes, TArray<FImportedMaterial>& OutMaterials)
     {
         FImportedMesh ImportedMesh;
         ImportedMesh.Name = Node->GetName();
@@ -433,9 +434,9 @@ namespace
                 }
             }
 
-            MaterialMap.Add(OutData.Materials.Num());
+            MaterialMap.Add(OutMaterials.Num());
             MaterialUVSetNames.Add(UVSetName);
-            OutData.Materials.Add(Material);
+            OutMaterials.Add(Material);
         }
 
         FbxGeometryElementMaterial* MaterialElement = Mesh->GetElementMaterial(0);
@@ -670,7 +671,15 @@ namespace
             }
         }
 
-        OutData.Meshes.Add(ImportedMesh);
+        OutMeshes.Add(std::move(ImportedMesh));
+    }
+
+    void CollectMeshNodes(FbxNode* Node, TArray<FbxNode*>& Nodes)
+    {
+        if (Node->GetMesh())
+            Nodes.Add(Node);
+        for (int32 Index = 0; Index < Node->GetChildCount(); ++Index)
+            CollectMeshNodes(Node->GetChild(Index), Nodes);
     }
 
     // Skin이 없어도 본 아래에 붙어 있는 메시(머리카락 등)는 함께 수집한다.
@@ -693,7 +702,7 @@ namespace
                 {
                     const int32 MeshIndex = OutData.Meshes.Num();
 
-                    ExtractMesh(Node, Mesh, BoneMap, OutData);
+                    ExtractMesh(Node, Mesh, BoneMap, OutData.Meshes, OutData.Materials);
 
                     FImportedMesh& ImportedMesh = OutData.Meshes[MeshIndex];
                     ImportedMesh.AttachedBoneIndex = BoneIt->second;
@@ -1258,6 +1267,16 @@ bool FFbxImporter::ResolveTexturePath(const FString& FbxPath, FString& TexturePa
 
 bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>& OutData)
 {
+    FFbxImportData Imported;
+    if (!ParseFbx(Path, Imported))
+        return false;
+
+    OutData = std::move(Imported.SkeletalGroups);
+    return true;
+}
+
+bool FFbxImporter::ParseFbx(const FString& Path, FFbxImportData& OutData)
+{
     // FBX SDK 객체의 생성과 수명을 관리하는 최상위 객체
     FbxManager* Manager = FbxManager::Create();
     if (!Manager)
@@ -1303,8 +1322,57 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
     }
 
     FbxNode* RootNode = Scene->GetRootNode();
+    TArray<FbxNode*> MeshNodes;
+    CollectMeshNodes(RootNode, MeshNodes);
+    if (MeshNodes.IsEmpty())
+    {
+        Manager->Destroy();
+        return false;
+    }
+
+    const bool bHasSkin = std::any_of(MeshNodes.begin(), MeshNodes.end(), [](FbxNode* Node)
+    {
+        return Node->GetMesh()->GetDeformerCount(FbxDeformer::eSkin) > 0;
+    });
+    FFbxImportData Result;
+
+    // 스킨이 없는 FBX만 스태틱으로 합친다. 본에 부착된 메시의 기존 수집 경로는 유지한다.
+    if (!bHasSkin)
+    {
+        const FBoneIndexMap NoBones;
+        for (FbxNode* Node : MeshNodes)
+        {
+            ExtractMesh(Node, Node->GetMesh(), NoBones, Result.StaticMesh.Meshes, Result.StaticMesh.Materials);
+
+            FbxAMatrix GeometryTransform;
+            GeometryTransform.SetT(Node->GetGeometricTranslation(FbxNode::eSourcePivot));
+            GeometryTransform.SetR(Node->GetGeometricRotation(FbxNode::eSourcePivot));
+            GeometryTransform.SetS(Node->GetGeometricScaling(FbxNode::eSourcePivot));
+
+            const FbxAMatrix NodeTransform = Node->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE);
+            FImportedMesh& ImportedMesh = Result.StaticMesh.Meshes[Result.StaticMesh.Meshes.Num() - 1];
+            ImportedMesh.MeshToSkeletonBindMatrix = ConvertFbxMatrix(NodeTransform * GeometryTransform);
+        }
+
+        for (FImportedMaterial& Material : Result.StaticMesh.Materials)
+        {
+            ResolveTexturePath(Path, Material.DiffuseTexturePath);
+            ResolveTexturePath(Path, Material.NormalTexturePath);
+        }
+
+        Manager->Destroy();
+        OutData = std::move(Result);
+        return true;
+    }
+
     TArray<FFbxSkeletalMeshGroup> Groups;
     CollectSkeletalMeshGroups(RootNode, RootNode, Groups);
+    if (Groups.IsEmpty())
+    {
+        HTR_LOG(Error, "[FBX] Skin meshes have no valid skeleton group: {}", Path);
+        Manager->Destroy();
+        return false;
+    }
 
     TArray<FSkeletalMeshImportData> ImportedGroups;
 
@@ -1329,7 +1397,7 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
         }
 
         for (FbxNode* MeshNode : Group.MeshNodes)
-            ExtractMesh(MeshNode, MeshNode->GetMesh(), BoneMap, ImportedData);
+            ExtractMesh(MeshNode, MeshNode->GetMesh(), BoneMap, ImportedData.Meshes, ImportedData.Materials);
 
         if (!ExtractSkinningTypes(Group, ImportedData))
         {
@@ -1368,7 +1436,8 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
     }
 
     // SDK 객체가 사라져도 이름·점·행렬 등 복사된 엔진 데이터는 유지된다.
-    OutData = std::move(ImportedGroups);
+    Result.SkeletalGroups = std::move(ImportedGroups);
+    OutData = std::move(Result);
 
     // Manager가 소유한 Scene과 나머지 SDK 객체들을 함께 해제한다.
     Manager->Destroy();
