@@ -443,8 +443,10 @@ namespace
         // 3. 꼭짓점 속성 데이터 준비
         int32 NormalWedgeCount = 0;
 
-        const FbxGeometryElementTangent* TangentElement = Mesh->GetElementTangent(0);
-        const FbxGeometryElementBinormal* BinormalElement = Mesh->GetElementBinormal(0);
+        const FbxLayer* BaseLayer = Mesh->GetLayer(0);
+        const FbxGeometryElementUV* BaseUVElement = BaseLayer ? BaseLayer->GetUVs() : nullptr;
+        const FbxGeometryElementTangent* TangentElement = BaseLayer ? BaseLayer->GetTangents() : nullptr;
+        const FbxGeometryElementBinormal* BinormalElement = BaseLayer ? BaseLayer->GetBinormals() : nullptr;
         int32 TangentWedgeCount = 0;
 
         const FbxGeometryElementVertexColor* ColorElement = Mesh->GetElementVertexColor(0);
@@ -488,8 +490,8 @@ namespace
                 UVSetName = MaterialUVSetNames[LocalMaterialIndex];
             }
 
-            // UV 세트가 달라지면 Build에서 선택한 UV로 탄젠트를 다시 계산한다.
-            const bool bUseSourceTangents = UVSetName && DefaultUVSetName && FString(UVSetName) == DefaultUVSetName;
+            // 베이스 레이어와 다른 UV를 사용하면 Build에서 탄젠트를 다시 계산한다.
+            const bool bUseSourceTangents = UVSetName && BaseUVElement && Mesh->GetElementUV(UVSetName) == BaseUVElement;
 
             const int32 VertexCount = Mesh->GetPolygonSize(PolygonIndex);
 
@@ -520,7 +522,7 @@ namespace
                 // 전체 면의 꼭짓점을 한 줄로 나열했을 때 현재 꼭짓점의 번호다.
                 const int32 PolygonVertexIndex = Mesh->GetPolygonVertexIndex(PolygonIndex) + VertexIndex;
 
-                // 원본 탄젠트만 읽는다. 없는 경우의 생성 처리는 아직 구현하지 않았다.
+                // 원본 탄젠트를 사용할 수 없으면 Build의 재계산 경로를 사용한다.
                 FbxVector4 SourceTangent;
 
                 if (bUseSourceTangents && Wedge.UVs.Num() > 0 && ReadFbxVectorElement(TangentElement, Wedge.ControlPointIndex, PolygonIndex, PolygonVertexIndex, SourceTangent))
