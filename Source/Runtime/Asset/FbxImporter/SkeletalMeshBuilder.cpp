@@ -352,10 +352,30 @@ namespace
         if (Built.Vertices.IsEmpty() || Built.Indices.IsEmpty() || Built.Indices.Num() % 3 != 0)
             return false;
 
+        if (Built.RefBones.IsEmpty() || !IsFinite(Built.ReferenceBounds.Min) || !IsFinite(Built.ReferenceBounds.Max))
+            return false;
+        for (int32 Axis = 0; Axis < 3; ++Axis)
+        {
+            if (Built.ReferenceBounds.Min[Axis] > Built.ReferenceBounds.Max[Axis])
+                return false;
+        }
+
+        for (int32 BoneIndex = 0; BoneIndex < Built.RefBones.Num(); ++BoneIndex)
+        {
+            const FSkeletalMeshRefBone& Bone = Built.RefBones[BoneIndex];
+            if (Bone.ParentIndex < -1 || Bone.ParentIndex >= BoneIndex ||
+                Bone.SubtreeEndIndex <= BoneIndex || Bone.SubtreeEndIndex > Built.RefBones.Num() ||
+                !IsFinite(Bone.RefLocalMatrix) || !IsFinite(Bone.InverseBindMatrix))
+                return false;
+            if (Bone.ParentIndex >= 0 && Bone.SubtreeEndIndex > Built.RefBones[Bone.ParentIndex].SubtreeEndIndex)
+                return false;
+        }
+
         uint32 ExpectedStart = 0;
         for (const FSkeletalMeshSection& Section : Built.Sections)
         {
             if (Section.StartIndex != ExpectedStart || Section.IndexCount == 0 || Section.IndexCount % 3 != 0 ||
+                ExpectedStart > Built.Indices.size() || Section.IndexCount > Built.Indices.size() - ExpectedStart ||
                 Section.MaterialSlotIndex >= static_cast<uint32>(Built.MaterialSlots.Num()))
                 return false;
             ExpectedStart += Section.IndexCount;
@@ -369,6 +389,9 @@ namespace
 
         for (const FSkeletalMeshVertex& Vertex : Built.Vertices)
         {
+            if (!IsFinite(Vertex.Vertex.Position) || !IsFinite(Vertex.Vertex.Normal) ||
+                !IsFinite(Vertex.Vertex.Tangent) || !IsFinite(Vertex.Vertex.Color) || !IsFinite(Vertex.Vertex.UV))
+                return false;
             const auto& Info = Vertex.InfluenceInfo;
             if (Info.InfluenceCount == 0 || Info.FirstInfluence > static_cast<uint32>(Built.Influences.Num()) ||
                 Info.InfluenceCount > static_cast<uint32>(Built.Influences.Num()) - Info.FirstInfluence)
@@ -388,6 +411,11 @@ namespace
         }
         return true;
     }
+}
+
+bool FSkeletalMeshBuilder::Validate(const FSkeletalMeshData& Data)
+{
+    return ValidateBuiltData(Data);
 }
 
 bool FSkeletalMeshBuilder::Build(const FSkeletalMeshImportData& Source, FSkeletalMeshData& OutData)

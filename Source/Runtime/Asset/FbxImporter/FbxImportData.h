@@ -120,7 +120,7 @@ struct FImportedMesh
     bool bHasVertexColors = false;
 };
 
-// 스켈레톤 그룹 하나의 임포트 결과
+// 스켈레톤 그룹 하나의 임포트 결과.
 struct FSkeletalMeshImportData
 {
     FString Name;

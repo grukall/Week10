@@ -14,6 +14,7 @@
 #include "Asset/FbxImporter/SkeletalMeshBuilder.h"
 #include "Asset/FbxImporter/FbxImportData.h"
 #include "Asset/FbxImporter/FbxStaticMeshBuilder.h"
+#include "Asset/FbxImporter/FbxMeshBake.h"
 #include "Render/SkeletalMesh.h"
 
 
@@ -277,17 +278,43 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	}
 	if (Extension == ".fbx" || Extension == ".FBX")
 	{
-		FFbxImportData ImportData;
-		if (!FFbxImporter::ParseFbx(Path, ImportData))
-			return;
-
-		if (!ImportData.StaticMesh.Meshes.IsEmpty())
+		// 캐시를 사용할 수 없을 때만 SDK 파싱과 CPU 메시 변환을 수행한다.
+		FFbxMeshData MeshData;
+		if (!FFbxMeshBake::ReadBaked(Path, MeshData))
 		{
-			FStaticMeshData MeshData;
-			if (!FFbxStaticMeshBuilder::Build(ImportData.StaticMesh, MeshData))
+			FFbxImportData ImportData;
+			if (!FFbxImporter::ParseFbx(Path, ImportData))
 				return;
 
-			if (UStaticMesh* Mesh = CreateStaticMesh(&MeshData))
+			bool bAllGroupsBuilt = true;
+			if (!ImportData.StaticMesh.Meshes.IsEmpty())
+			{
+				MeshData.StaticMesh = MakeUnique<FStaticMeshData>();
+				if (!FFbxStaticMeshBuilder::Build(ImportData.StaticMesh, *MeshData.StaticMesh))
+					return;
+			}
+			else
+			{
+				MeshData.SkeletalGroups.SetNum(ImportData.SkeletalGroups.Num());
+				for (int32 GroupIndex = 0; GroupIndex < ImportData.SkeletalGroups.Num(); ++GroupIndex)
+				{
+					if (!FSkeletalMeshBuilder::Build(ImportData.SkeletalGroups[GroupIndex], MeshData.SkeletalGroups[GroupIndex]))
+					{
+						HTR_LOG(Error, "[FBX] Build failed: File={}, Group={}", Path, GroupIndex);
+						bAllGroupsBuilt = false;
+					}
+				}
+			}
+
+			// 일부 그룹이 실패한 결과는 저장하지 않는다. 저장 실패 시에도 현재 메시 로딩은 계속한다.
+			if (bAllGroupsBuilt)
+				FFbxMeshBake::WriteBaked(Path, MeshData);
+		}
+
+		// 캐시에서 읽은 데이터도 기존 메시 생성 경로에서 재질과 GPU 자원을 만든다.
+		if (MeshData.StaticMesh)
+		{
+			if (UStaticMesh* Mesh = CreateStaticMesh(MeshData.StaticMesh.get()))
 			{
 				RegisterAsset(Key, Mesh);
 				AssetPathMap.Add(Key, Path);
@@ -296,25 +323,12 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 			return;
 		}
 
-		const TArray<FSkeletalMeshImportData>& ImportGroups = ImportData.SkeletalGroups;
-
-		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, ImportGroups.Num());
-
-		for (int32 GroupIndex = 0; GroupIndex < ImportGroups.Num(); ++GroupIndex)
+		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, MeshData.SkeletalGroups.Num());
+		for (int32 GroupIndex = 0; GroupIndex < MeshData.SkeletalGroups.Num(); ++GroupIndex)
 		{
-			const FSkeletalMeshImportData& ImportData = ImportGroups[GroupIndex];
 			const FString GroupKey =
 				Key + "#Group" + std::to_string(GroupIndex);
-
-			FSkeletalMeshData MeshData;
-			if (!FSkeletalMeshBuilder::Build(ImportData, MeshData))
-			{
-				HTR_LOG(Error, "[FBX] Build failed: File={}, Group={}",
-					Path, GroupIndex);
-				continue;
-			}
-
-			USkeletalMesh* Mesh = CreateSkeletalMesh(std::move(MeshData));
+			USkeletalMesh* Mesh = CreateSkeletalMesh(std::move(MeshData.SkeletalGroups[GroupIndex]));
 			if (!Mesh)
 			{
 				HTR_LOG(Error, "[FBX] Asset creation failed: File={}, Group={}",
@@ -326,9 +340,8 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 			AssetPathMap.Add(GroupKey, Path);
 
 			HTR_LOG(Info,
-				"[FBX] Registered: Key={}, Meshes={}, Vertices={}, Bones={}",
+				"[FBX] Registered: Key={}, Vertices={}, Bones={}",
 				GroupKey,
-				ImportData.Meshes.Num(),
 				Mesh->MeshData.Vertices.Num(),
 				Mesh->MeshData.RefBones.Num());
 

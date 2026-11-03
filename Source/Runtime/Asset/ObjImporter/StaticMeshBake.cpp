@@ -32,14 +32,14 @@ namespace
 
 	// 숫자 || 숫자만 있는 구조체
 	template<typename T>
-	void WritePod(std::ofstream& Out, const T& Value)
+	void WritePod(std::ostream& Out, const T& Value)
 	{
 		static_assert(std::is_trivially_copyable_v<T>, "invalid plane old data");
 		Out.write(reinterpret_cast<const char*>(&Value), sizeof(T));
 	}
 
 	template<typename T>
-	bool ReadPod(std::ifstream& In, T& Value)
+	bool ReadPod(std::istream& In, T& Value)
 	{
 		static_assert(std::is_trivially_copyable_v<T>);
 		In.read(reinterpret_cast<char*>(&Value), sizeof(T));
@@ -48,7 +48,7 @@ namespace
 
 	// 배열: 개수 + 원소 전체를 한 번에
 	template<typename T>
-	void WriteArray(std::ofstream& Out, const TArray<T>& Array)
+	void WriteArray(std::ostream& Out, const TArray<T>& Array)
 	{
 		const uint32 Count = static_cast<uint32>(Array.Num());
 		WritePod(Out, Count);
@@ -59,7 +59,7 @@ namespace
 	}
 
 	template<typename T>
-	bool ReadArray(std::ifstream& In, TArray<T>& Array, uint32 MaxCount)
+	bool ReadArray(std::istream& In, TArray<T>& Array, uint32 MaxCount)
 	{
 		uint32 Count = 0;
 		if (!ReadPod(In, Count) || Count > MaxCount)
@@ -76,14 +76,14 @@ namespace
 	}
 
 	// 길이 + 문자열
-	void WriteString(std::ofstream& Out, const FString& Str)
+	void WriteString(std::ostream& Out, const FString& Str)
 	{
 		const uint32 Length = static_cast<uint32>(Str.size());
 		WritePod(Out, Length);
 		Out.write(Str.data(), Length);
 	}
 
-	bool ReadString(std::ifstream& In, FString& Str)
+	bool ReadString(std::istream& In, FString& Str)
 	{
 		uint32 Length = 0;
 		if (!ReadPod(In, Length) || Length > 4096)
@@ -103,7 +103,16 @@ TUniquePtr<FStaticMeshData> FStaticMeshBake::ReadBaked(const FString& BinPath)
 	{
 		return nullptr;   // .bin이 없음 (처음 로드)
 	}
+	TUniquePtr<FStaticMeshData> Data = ReadBaked(In);
+	if (Data)
+	{
+		HTR_LOG(Info, "[BAKE] {}: loaded", BinPath);
+	}
+	return Data;
+}
 
+TUniquePtr<FStaticMeshData> FStaticMeshBake::ReadBaked(std::istream& In)
+{
 	TUniquePtr<FStaticMeshData> Data = MakeUnique<FStaticMeshData>();
 	uint32 MaxCount = 1000000;
 
@@ -114,7 +123,7 @@ TUniquePtr<FStaticMeshData> FStaticMeshBake::ReadBaked(const FString& BinPath)
 		std::memcmp(Header.Magic, Expected.Magic, sizeof(Header.Magic)) != 0 ||
 		Header.Version != Expected.Version)
 	{
-		HTR_LOG(Warning, "[BAKE] {}: invalid header or version, re-cooking", BinPath);
+		HTR_LOG(Warning, "[BAKE] Invalid static mesh header or version, re-cooking");
 		return nullptr;
 	}
 
@@ -127,7 +136,7 @@ TUniquePtr<FStaticMeshData> FStaticMeshBake::ReadBaked(const FString& BinPath)
 	}
 
 	uint32 MaterialSlotsNum = 0;
-	if (!ReadPod<uint32>(In, MaterialSlotsNum))
+	if (!ReadPod<uint32>(In, MaterialSlotsNum) || MaterialSlotsNum > MaxCount)
 	{
 		return nullptr;
 	}
@@ -157,11 +166,10 @@ TUniquePtr<FStaticMeshData> FStaticMeshBake::ReadBaked(const FString& BinPath)
 	FString Error;
 	if (!Data->Validate(Error))
 	{
-		HTR_LOG(Warning, "[BAKE] {}: {}, re-cooking", BinPath, Error);
+		HTR_LOG(Warning, "[BAKE] {}, re-cooking", Error);
 		return nullptr;
 	}
 
-	HTR_LOG(Info, "[BAKE] {}: loaded", BinPath);
 	return Data;
 }
 
@@ -173,7 +181,14 @@ void FStaticMeshBake::WriteBaked(const FString& BinPath, const FStaticMeshData& 
 		HTR_LOG(Warning, "[BAKE] {}: cannot open for writing", BinPath);
 		return;
 	}
+	if (!WriteBaked(Out, Data))
+	{
+		HTR_LOG(Warning, "[BAKE] {}: write failed", BinPath);
+	}
+}
 
+bool FStaticMeshBake::WriteBaked(std::ostream& Out, const FStaticMeshData& Data)
+{
 	WritePod<FBakeHeader>(Out, FBakeHeader());
 	WriteArray<FVertexPNCT>(Out, Data.Vertices);
 	WriteArray<FLODSourceVertex>(Out, Data.LODSourceVertices);
@@ -195,9 +210,5 @@ void FStaticMeshBake::WriteBaked(const FString& BinPath, const FStaticMeshData& 
 	// AABB
 	WritePod<FBox>(Out, Data.AABB);
 
-	// 스트림은 한 번 실패하면 상태가 유지되므로 마지막에 한 번만 확인
-	if (!Out)
-	{
-		HTR_LOG(Warning, "[BAKE] {}: write failed", BinPath);
-	}
+	return static_cast<bool>(Out);
 }

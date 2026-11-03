@@ -393,8 +393,7 @@ namespace
             if (RequestedName.empty() || RequestedName == "default")
                 return DefaultUVSetName;
 
-            HTR_LOG(Warning, "[FBX UV] UV set not found: Mesh={}, Material={}, UVSet={}",
-                ImportedMesh.Name, MaterialName, RequestedName);
+            HTR_LOG(Warning, "[FBX UV] UV set not found: Mesh={}, Material={}, UVSet={}", ImportedMesh.Name, MaterialName, RequestedName);
             return nullptr;
         };
 
