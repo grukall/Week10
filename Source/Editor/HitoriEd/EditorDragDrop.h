@@ -11,5 +11,8 @@ namespace EditorDragDrop
 	// 페이로드 내용: UFont* 한 개
 	inline constexpr const char* Font = "ASSET_FONT";
 
+	// 페이로드 내용: USkeletalMesh* 한 개
+	inline constexpr const char* SkeletalMesh = "ASSET_SKELETAL_MESH";
+
 	inline constexpr const char* Component = "COMPONENT";
 }

@@ -9,6 +9,7 @@
 #include "Component/BoxComponent.h"
 #include "Component/SphereComponent.h"
 #include "Component/CapsuleComponent.h"
+#include "Component/DecalComponent.h"
 #include <d3dcompiler.h>
 #include "imgui_internal.h"
 #include "Editor/HitoriEd/EditorDragDrop.h"
@@ -16,6 +17,7 @@
 #include "Editor/HitoriEd/EditorFileUtils.h"
 #include "Component/PrimitiveComponent.h"
 #include "Component/StaticMeshComponent.h"
+#include "Component/SkeletalMeshComponent.h"
 #include "Component/TextRenderComponent.h"
 #include "Component/ParticleSubUVComponent.h"
 #include "Component/RotatingMovementComponent.h"
@@ -25,6 +27,7 @@
 #include "Component/HitSquashComponent.h"
 #include "Asset/AssetManager.h"
 #include "Render/Material.h"
+#include "Render/SkeletalMesh.h"
 #include "Render/Texture2D.h"
 #include "Text/Font.h"
 #include "UObject/UObjectIterator.h"
@@ -350,6 +353,156 @@ namespace
 					ImGui::SetItemDefaultFocus();
 			}
 			ImGui::EndCombo();
+		}
+	}
+
+	// 데칼 텍스처 한 칸. 썸네일에 콘텐츠 브라우저의 텍스처를 드롭해 바꾸고 Delete로 뗀다.
+	// 바뀐 텍스처를 돌려주며, 그대로면 Current를 돌려준다.
+	UTexture2D* DrawDecalTextureSlot(const char* Label, UTexture2D* Current, bool bAllowEmpty)
+	{
+		const float ThumbnailSize = 64.0f;
+		UTexture2D* Result = Current;
+		ImGui::PushID(Label);
+
+		ImGui::TableNextRow();
+		ImGui::TableSetColumnIndex(0);
+		ImGui::Text("%s", Label);
+		ImGui::TableSetColumnIndex(1);
+
+		if (Current && Current->GetResource())
+		{
+			ImGui::Image((ImTextureID)Current->GetResource()->GetRawSRV(), { ThumbnailSize, ThumbnailSize });
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", Current->GetPath().c_str());
+		}
+		else
+		{
+			ImGui::Button("Empty", { ThumbnailSize, ThumbnailSize });
+		}
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::Texture))
+				Result = *static_cast<UTexture2D**>(Payload->Data);
+			ImGui::EndDragDropTarget();
+		}
+
+		// 색 텍스처는 비울 수 없다. 데칼은 색 텍스처가 없으면 그리지 않는다.
+		if (bAllowEmpty)
+		{
+			ImGui::SameLine();
+			ImGui::BeginDisabled(Current == nullptr);
+			if (ImGui::SmallButton("Delete"))
+				Result = nullptr;
+			ImGui::EndDisabled();
+		}
+
+		if (Current)
+			ImGui::TextWrapped("%s", fs::path(Current->GetPath()).filename().string().c_str());
+		else
+			ImGui::TextDisabled("(Empty)");
+
+		ImGui::PopID();
+		return Result;
+	}
+
+	// 데칼 머티리얼의 색 텍스처와 노멀 텍스처를 고른다. 처음 고칠 때 이 데칼 전용 인스턴스가 만들어진다.
+	void DrawDecalTextures(UDecalComponent* Decal)
+	{
+		if (!ImGui::CollapsingHeader("Decal Textures", ImGuiTreeNodeFlags_DefaultOpen))
+			return;
+
+		if (ImGui::BeginTable("DecalTextures", 2))
+		{
+			ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+			ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+			UTexture2D* Texture = Decal->GetTexture();
+			UTexture2D* NewTexture = DrawDecalTextureSlot("Texture", Texture, false);
+			if (NewTexture != Texture)
+				Decal->SetTexture(NewTexture);
+
+			UTexture2D* NormalTexture = Decal->GetNormalTexture();
+			UTexture2D* NewNormal = DrawDecalTextureSlot("NormalTexture", NormalTexture, true);
+			if (NewNormal != NormalTexture)
+				Decal->SetNormalTexture(NewNormal);
+
+			ImGui::TableNextRow();
+			ImGui::TableSetColumnIndex(0);
+			ImGui::Text("Flip Green");
+			ImGui::TableSetColumnIndex(1);
+			bool bFlip = Decal->GetFlipNormalGreen();
+			if (ImGui::Checkbox("##FlipNormalGreen", &bFlip))
+				Decal->SetFlipNormalGreen(bFlip);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Normal map uses the other green direction (OpenGL vs DirectX).");
+
+			ImGui::EndTable();
+		}
+		ImGui::TextDisabled("Normal is visible only in Lit view.");
+	}
+
+	void DrawSkeletalMeshSlot(UObject* Owner, USkeletalMesh** SkeletalMeshPtr)
+	{
+		USkeletalMesh* Current = *SkeletalMeshPtr;
+		const FString CurrentPath = Current ? Current->GetPath() : "";
+		const FString CurrentFileName = Current ? GetAssetDisplayName(CurrentPath) : "None";
+		const auto SetMesh = [Owner, SkeletalMeshPtr](USkeletalMesh* Mesh)
+		{
+			if (USkinnedMeshComponent* MeshComponent = Cast<USkinnedMeshComponent>(Owner))
+				MeshComponent->SetSkeletalMesh(Mesh);
+			else
+				*SkeletalMeshPtr = Mesh;
+		};
+
+		ImGui::SetNextItemWidth(-1.0f);
+		if (ImGui::BeginCombo("##SkeletalMesh", CurrentFileName.c_str()))
+		{
+			if (ImGui::Selectable("None", Current == nullptr))
+				SetMesh(nullptr);
+
+			struct FMeshItem
+			{
+				FString DisplayName;
+				FString Path;
+				USkeletalMesh* Mesh;
+			};
+			TArray<FMeshItem> Items;
+			for (TObjectIterator<USkeletalMesh> Itr; Itr; ++Itr)
+			{
+				const FString ItemPath = Itr->GetPath();
+				if (!ItemPath.empty())
+					Items.Add({ GetAssetDisplayName(ItemPath), ItemPath, *Itr });
+			}
+			std::sort(Items.begin(), Items.end(), [](const FMeshItem& A, const FMeshItem& B)
+			{
+				return _stricmp(A.DisplayName.c_str(), B.DisplayName.c_str()) < 0;
+			});
+
+			for (const FMeshItem& Item : Items)
+			{
+				const bool bSelected = Item.Mesh == Current;
+				ImGui::PushID(Item.Mesh);
+				if (ImGui::Selectable(Item.DisplayName.c_str(), bSelected))
+					SetMesh(Item.Mesh);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", Item.Path.c_str());
+				if (bSelected)
+					ImGui::SetItemDefaultFocus();
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
+
+		if (ImGui::IsItemHovered() && Current)
+			ImGui::SetTooltip("%s", CurrentPath.c_str());
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::SkeletalMesh))
+			{
+				if (Payload->DataSize == sizeof(USkeletalMesh*))
+					SetMesh(*static_cast<USkeletalMesh**>(Payload->Data));
+			}
+			ImGui::EndDragDropTarget();
 		}
 	}
 
@@ -811,6 +964,17 @@ namespace
 					bChanged = true;
 				}
 			}
+			else if (Property.Name == "BlendType" && Cast<UDecalComponent>(Object))
+			{
+				// EDecalBlendType 순서와 같다.
+				const char* Items[] = { "Albedo", "Emissive" };
+				int Selected = static_cast<int>(Cast<UDecalComponent>(Object)->GetBlendType());
+				if (ImGui::Combo(Label.c_str(), &Selected, Items, IM_ARRAYSIZE(Items)))
+				{
+					*static_cast<int*>(ValuePtr) = Selected;
+					bChanged = true;
+				}
+			}
 			else
 				bChanged = ImGui::DragInt(Label.c_str(), static_cast<int*>(ValuePtr), 1.0f);
 			break;
@@ -1009,6 +1173,10 @@ namespace
 			{
 				DrawMeshSlot(Object, reinterpret_cast<UStaticMesh**>(ObjPtr));
 			}
+			else if (Property.Class == USkeletalMesh::StaticClass())
+			{
+				DrawSkeletalMeshSlot(Object, reinterpret_cast<USkeletalMesh**>(ObjPtr));
+			}
 			break;
 		}
 		default:
@@ -1098,6 +1266,12 @@ namespace
 			if (ImGui::MenuItem("StaticMesh Component"))
 			{
 				OutSelectedComponent = Actor->AddComponent(UStaticMeshComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("SkeletalMesh Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(USkeletalMeshComponent::StaticClass(), FString(ComponentNameInputBuf));
 				ComponentNameInputBuf[0] = '\0';
 				ImGui::CloseCurrentPopup();
 			}
@@ -1275,6 +1449,10 @@ void FDetailsPanel::OnRender()
 			if (UMeshComponent* MeshComponent = Cast<UMeshComponent>(TargetComponent))
 			{
 				DrawMaterialSlots(MeshComponent);
+			}
+			else if (UDecalComponent* DecalComponent = Cast<UDecalComponent>(TargetComponent))
+			{
+				DrawDecalTextures(DecalComponent);
 			}
 			ImGui::PopID();
 

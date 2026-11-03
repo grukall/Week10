@@ -32,7 +32,7 @@ protected:
     // 메시 변경 시 Local 포즈와 본 선택 Bounds 배열의 크기를 설정
     void OnMeshDataChanged() override;
 
-    // 한 본의 서브트리를 갱신한다. 전체/복수 본 변경이면 전체 범위를 갱신한다.
+    // 기록된 본 구간들을 부모부터 갱신한다.
     void RefreshBoneTransforms(int32 BoneIndex) override;
 
 private:
@@ -46,7 +46,5 @@ private:
 	// RefBones와 같은 인덱스이며, 본 포즈를 누적한 뒤 갱신한다.
 	TArray<FBox> BonePickBounds;
 
-	// Dirty일 때 INDEX_NONE은 전체 갱신, 유효한 인덱스는 단일 서브트리 갱신이다.
-	int32 DirtyBoneIndex = INDEX_NONE;
 	bool bPoseDirty = true;
 };

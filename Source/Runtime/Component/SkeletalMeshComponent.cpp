@@ -8,10 +8,7 @@ void USkeletalMeshComponent::SetBoneLocalTransform(int32 BoneIndex, const FMatri
         return;
 
     BoneSpaceTransforms[BoneIndex] = LocalTransform;
-    if (!bPoseDirty)
-        DirtyBoneIndex = BoneIndex;
-    else if (DirtyBoneIndex != BoneIndex)
-        DirtyBoneIndex = INDEX_NONE;
+    MarkSkinningDirty(BoneIndex, Data->RefBones[BoneIndex].SubtreeEndIndex);
     bPoseDirty = true;
 }
 
@@ -38,7 +35,7 @@ void USkeletalMeshComponent::SetSkeletalMeshPose(const TArray<FMatrix>& LocalTra
 		return;
 
 	BoneSpaceTransforms = LocalTransforms;
-	DirtyBoneIndex = INDEX_NONE;
+	MarkSkinningDirty();
 	bPoseDirty = true;
 }
 
@@ -64,7 +61,7 @@ void USkeletalMeshComponent::ResetToReferencePose()
         BoneSpaceTransforms[i] = Data->RefBones[i].RefLocalMatrix;
     }
 
-    DirtyBoneIndex = INDEX_NONE;
+    MarkSkinningDirty();
     bPoseDirty = true;
 }
 
@@ -81,7 +78,6 @@ void USkeletalMeshComponent::OnMeshDataChanged()
     {
         BoneSpaceTransforms.Empty();
         BonePickBounds.Empty();
-        DirtyBoneIndex = INDEX_NONE;
         bPoseDirty = false;
         return;
     }
@@ -100,35 +96,18 @@ void USkeletalMeshComponent::RefreshBoneTransforms(int32 BoneIndex)
         || (BoneIndex != INDEX_NONE && !BoneSpaceTransforms.IsValidIndex(BoneIndex)))
         return;
 
-    // 호출자가 지정한 본 외에 누적된 변경도 놓치지 않도록 한다.
-    if (BoneIndex == INDEX_NONE)
-        BoneIndex = DirtyBoneIndex;
-    else if (DirtyBoneIndex != BoneIndex)
-        BoneIndex = INDEX_NONE;
-
-    int32 FirstBone = 0;
-    int32 EndBone = BoneSpaceTransforms.Num();
-    if (BoneIndex != INDEX_NONE)
+    for (int32 FirstBone : DirtyBoneStarts)
     {
-        const int32 SubtreeEnd = Data->RefBones[BoneIndex].SubtreeEndIndex;
-        // 범위 정보가 없는 기존 데이터는 전체 갱신으로 처리한다.
-        if (SubtreeEnd > BoneIndex && SubtreeEnd <= EndBone)
+        const int32 EndBone = DirtyBoneEndIndices[FirstBone];
+        for (int32 i = FirstBone; i < EndBone; ++i)
         {
-            FirstBone = BoneIndex;
-            EndBone = SubtreeEnd;
+            const int32 ParentIndex = Data->RefBones[i].ParentIndex;
+            ComponentSpaceTransforms[i] = ParentIndex == -1 ? BoneSpaceTransforms[i] : BoneSpaceTransforms[i] * ComponentSpaceTransforms[ParentIndex];
         }
     }
 
-    for (int32 i = FirstBone; i < EndBone; ++i)
-    {
-        const int32 ParentIndex = Data->RefBones[i].ParentIndex;
-        ComponentSpaceTransforms[i] = ParentIndex == -1  ? BoneSpaceTransforms[i] : BoneSpaceTransforms[i] * ComponentSpaceTransforms[ParentIndex];
-    }
-
 	UpdateBonePickBounds();
-	DirtyBoneIndex = INDEX_NONE;
 	bPoseDirty = false;
-	MarkSkinningDirty();
 }
 
 void USkeletalMeshComponent::UpdateBonePickBounds()
@@ -143,9 +122,13 @@ void USkeletalMeshComponent::UpdateBonePickBounds()
     const float HalfSize = MeshDiagonal * 0.005f; // AABB최소 크기 하드 코딩
     const FVector Extent(HalfSize, HalfSize, HalfSize);
 
-    for (int32 i = 0; i < ComponentSpaceTransforms.Num(); ++i)
+    for (int32 FirstBone : DirtyBoneStarts)
     {
-        const FVector Center = ComponentSpaceTransforms[i].TransformPosition(FVector::ZeroVector);
-        BonePickBounds[i] = FBox{ Center - Extent, Center + Extent };
+        const int32 EndBone = DirtyBoneEndIndices[FirstBone];
+        for (int32 i = FirstBone; i < EndBone; ++i)
+        {
+            const FVector Center = ComponentSpaceTransforms[i].TransformPosition(FVector::ZeroVector);
+            BonePickBounds[i] = FBox{ Center - Extent, Center + Extent };
+        }
     }
 }

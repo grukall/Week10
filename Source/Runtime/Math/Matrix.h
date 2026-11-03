@@ -29,6 +29,7 @@ public:
 	//XMMATRIX FMatrixToXMMatrix() const;
 
 	FVector4 GetColumn(int32 i) const;
+	FVector4 GetRow(int32 i) const;
 	FVector4 GetOrigin();
 	FVector4 GetScaledAxis(FVector4& X, FVector4& Y, FVector4& Z) const;
 	FVector4 TransformFVector4(const FVector4& V) const;	
@@ -40,6 +41,8 @@ public:
 	FVector4 InverseTransformPosition(const FVector& V) const;
 
 	FMatrix ApplyScale(float Scale) const;
+	FMatrix ApplyScale(const FVector& Scale) const;
+	FVector GetScale() const;
 	FMatrix GetTransposed() const;
 	FMatrix Inverse() const;
 

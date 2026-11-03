@@ -9,8 +9,12 @@
 
 #include "Core/EngineTimer.h"
 #include "Core/Stats/LightweightStats.h"
+#include "Core/StatOverlay.h"
 
 #include "Engine/PrimitiveSceneProxy.h"
+#include "DeferredDecalSceneProxy.h"
+#include "Material.h"
+#include "Asset/AssetManager.h"
 
 #include "RenderCommand.h"
 #include "RenderResourceManager.h"
@@ -41,6 +45,28 @@ namespace
     constexpr uint32 ShadowSamplerSlot = 1;
     constexpr uint32 DirectionalShadowCBSlot = 5;
     constexpr uint32 ShadowComparisonSamplerSlot = 2;
+	constexpr uint32 DecalCBSlot = 6;
+	// t0은 머티리얼 텍스처 규칙대로 데칼 텍스처, t1은 Depth 방식이 읽는 씬 깊이다.
+	constexpr uint32 DecalTextureSlot = 0;
+	constexpr uint32 DecalSceneDepthSlot = 1;
+	constexpr uint32 DecalNormalTextureSlot = 2;
+
+	// UE CalculateDecalFadeAlpha. 데칼이 화면에서 FadeScreenSize 기준보다 작으면 0, 1.5배 이상이면 1이다.
+	// 같은 데칼도 카메라마다 크기가 달라 뷰마다 계산한다. 직교 뷰는 거리로 크기가 변하지 않아 하지 않는다.
+	float ComputeDecalScreenFade(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, float ViewportWidth)
+	{
+		if (Decal.FadeScreenSize <= 0.0f || View.IsOrthographic() || ViewportWidth <= 0.0f)
+			return 1.0f;
+
+		const float Distance = std::max((View.GetCameraLocation() - Decal.OBB.Center).Size(), 1.0e-4f);
+		const float Radius = std::max({ Decal.OBB.Extent.X, Decal.OBB.Extent.Y, Decal.OBB.Extent.Z });
+		const float CurrentScreenSize = Radius / Distance;
+
+		// FOV가 넓을수록, 해상도가 낮을수록 기준을 키운다. 600은 UE가 실험으로 정한 상수다.
+		const float FOVFactor = (2.0f / View.ProjectionMatrix[0][0]) / ViewportWidth * 600.0f;
+		const float FadeCoeff = Decal.FadeScreenSize * FOVFactor;
+		return FMath::Clamp((CurrentScreenSize - FadeCoeff) / (FadeCoeff * 0.5f), 0.0f, 1.0f);
+	}
 
     struct FTileLightShadingConstants
     {
@@ -116,6 +142,7 @@ bool FRenderer::Init()
 	LightingCB = RenderCommand::CreateConstantBuffer(sizeof(FLightingConstants));
 	FLightingConstants LightingConstant{};
 	RenderCommand::UpdateBufferData(LightingCB.get(), &LightingConstant);
+	DecalCB = RenderCommand::CreateConstantBuffer(sizeof(FDecalConstants));
 
     TileShadingCB = RenderCommand::CreateConstantBuffer(sizeof(FTileLightShadingConstants));
     const FTileLightShadingConstants TileDefaults{};
@@ -147,6 +174,15 @@ bool FRenderer::Init()
     ShadowTileClearShader = FRenderResourceManager::FindShaderProgram("Resources/Shader/ShadowAtlasClear.hlsl");
     if (!ShadowTileClearShader || !ShadowTileClearShader->VertexShader || !ShadowTileClearShader->PixelShader ||
         !ShadowTileClearShader->VertexShader->IsValid() || !ShadowTileClearShader->PixelShader->IsValid()) return false;
+
+	DecalMeshShader = FRenderResourceManager::FindShaderProgram("Resources/Shader/DecalMesh.hlsl");
+	if (!DecalMeshShader || !DecalMeshShader->VertexShader || !DecalMeshShader->PixelShader ||
+		!DecalMeshShader->VertexShader->IsValid() || !DecalMeshShader->PixelShader->IsValid()) return false;
+
+	DeferredDecalShader = FRenderResourceManager::FindShaderProgram("Resources/Shader/DeferredDecal.hlsl");
+	if (!DeferredDecalShader || !DeferredDecalShader->VertexShader || !DeferredDecalShader->PixelShader ||
+		!DeferredDecalShader->VertexShader->IsValid() || !DeferredDecalShader->PixelShader->IsValid()) return false;
+
     D3D11_DEPTH_STENCIL_DESC ClearDepthDesc{};
     ClearDepthDesc.DepthEnable = TRUE;
     ClearDepthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
@@ -232,6 +268,308 @@ void FRenderer::RenderAll(FRenderQueue& InQueue, const FMatrix& ViewProjection, 
 	RenderTranslucent(ViewProjection);
 }
 
+void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, FTexture2D* DBufferNormal, EDecalMethod Method)
+{
+	if (!DBuffer || !DBufferNormal)
+		return;
+
+	FTexture2D* SceneDepth = SceneInfo.DepthStencil.Texture;
+
+	// A가 0이면 UberLit이 원래 Albedo를 그대로 쓴다. 지우지 않으면 지난 프레임 데칼이 남는다.
+	FRenderingInfo PassInfo;
+	PassInfo.ViewportSetting = SceneInfo.ViewportSetting;
+	FRenderingDesc DBufferDesc{};
+	DBufferDesc.Texture = DBuffer;
+	DBufferDesc.ClearValue.ColorClearValue = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+	PassInfo.ColorRenderTargets.Add(DBufferDesc);
+	// 노멀은 두 번째 타깃(SV_Target1)이다. 블렌드는 0번 타깃 설정을 같이 쓰므로 노멀도 덮인 만큼 쌓인다.
+	FRenderingDesc NormalDesc{};
+	NormalDesc.Texture = DBufferNormal;
+	NormalDesc.ClearValue.ColorClearValue = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+	PassInfo.ColorRenderTargets.Add(NormalDesc);
+	// 깊이는 읽기 전용 DSV로 꽂는다. Depth 방식은 같은 깊이를 SRV로 동시에 읽고, Mesh 방식은 LESS_EQUAL 테스트만 한다.
+	if (SceneDepth && SceneDepth->GetReadOnlyDSV())
+	{
+		PassInfo.DepthStencil.DSV = SceneDepth->GetReadOnlyDSV();
+		PassInfo.DepthStencil.LoadOp = ERenderTargetLoadOp::Load;
+	}
+	RenderCommand::BeginRenderPass(PassInfo);
+	// 데칼이 겹치면 A가 Src + Dst·(1-SrcA)로 쌓여 "얼마나 덮였나"가 된다.
+	DrawDecals(Decals, View, SceneInfo.ViewportSetting, SceneDepth, Method, EBlendState::AlphaBlend);
+	RenderCommand::EndRenderPass(PassInfo);
+}
+
+void FRenderer::RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, EDecalMethod Method, EBlendState BlendState)
+{
+	FTexture2D* SceneDepth = SceneInfo.DepthStencil.Texture;
+	if (Decals.Num() == 0 || !SceneDepth || !SceneDepth->GetReadOnlyDSV())
+		return;
+
+	// 진행 중인 패스를 이어 그리므로 색과 깊이를 지우지 않는다
+	FRenderingInfo ResumeInfo = SceneInfo;
+	for (FRenderingDesc& Color : ResumeInfo.ColorRenderTargets)
+		Color.LoadOp = ERenderTargetLoadOp::Load;
+	ResumeInfo.DepthStencil.LoadOp = ERenderTargetLoadOp::Load;
+
+	// 깊이를 읽기 전용 DSV로 바꿔 끼우면 같은 깊이를 SRV로 읽으면서 깊이 테스트도 할 수 있다
+	FRenderingInfo DecalInfo = ResumeInfo;
+	DecalInfo.DepthStencil.DSV = SceneDepth->GetReadOnlyDSV();
+
+	RenderCommand::EndRenderPass(SceneInfo);
+	RenderCommand::BeginRenderPass(DecalInfo);
+	DrawDecals(Decals, View, SceneInfo.ViewportSetting, SceneDepth, Method, BlendState);
+	RenderCommand::EndRenderPass(DecalInfo);
+
+	// 반투명은 원래의 쓰기 가능한 DSV로 이어 그린다. 블렌드·깊이 상태는 반투명 머티리얼이 다시 설정한다.
+	RenderCommand::BeginRenderPass(ResumeInfo);
+}
+
+void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method, EBlendState BlendState)
+{
+	// stat decal 그리기 수치는 뷰마다 새로 센다
+	// stat decal 수치는 BeginDecalStats가 뷰마다 되돌리고, 여기서는 패스마다 더한다
+	if (Decals.Num() == 0)
+		return;
+
+	FDecalConstants Constants;
+	Constants.ViewProjection = View.ViewProjection;
+	Constants.InvViewProjection = View.ViewProjection.Inverse();
+	Constants.ViewportWidth = static_cast<float>(Viewport.Width);
+	Constants.ViewportHeight = static_cast<float>(Viewport.Height);
+
+	RenderCommand::SetBlendState(BlendState);
+	RenderCommand::SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	RenderCommand::BindConstantBuffer(DecalCBSlot, DecalCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
+
+	// 두 방식의 비용을 같은 구간(드로우 기록부터 GPU 실행까지)으로 잰다
+	FDecalGPUQuery* GPUQuery = BeginDecalGPUQuery();
+	const uint64 StartCycles = FPlatformTime::GetCycles64();
+
+	if (Method == EDecalMethod::Depth)
+		DrawDecalBoxes(Decals, View, Constants, SceneDepth);
+	else
+		DrawDecalReceivers(Decals, View, Constants);
+
+	DecalViewCpuMs += FPlatformTime::ToMilliseconds64(FPlatformTime::GetCycles64() - StartCycles);
+	bDecalViewDrew = true;
+	EndDecalGPUQuery(GPUQuery);
+
+	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
+	// 다음 패스가 깊이를 쓰기 가능한 DSV로 다시 꽂을 때 SRV로 남아 있으면 D3D가 강제로 떼므로 먼저 비운다
+	RenderCommand::UnbindShaderResource(DecalSceneDepthSlot, EShaderBindFlagBits::Pixel);
+}
+
+void FRenderer::BeginDecalStats(EDecalMethod Method, uint32 TotalDecals)
+{
+	FDecalStats& Stats = FDecalStats::Get();
+
+	// 지난 뷰의 패스들을 합친 CPU 시간을 평균에 넣는다. 그린 데칼이 없던 뷰는 평균을 흔들지 않게 건너뛴다.
+	if (bDecalViewDrew)
+		Stats.DrawCpuMs += (DecalViewCpuMs - Stats.DrawCpuMs) * 0.1;
+	DecalViewCpuMs = 0.0;
+	bDecalViewDrew = false;
+	++DecalStatsView;
+
+	Stats.bMeshMethod = Method == EDecalMethod::Mesh;
+	Stats.TotalDecals = TotalDecals;
+	Stats.DrawnDecals = 0;
+	Stats.DrawnTriangles = 0;
+}
+
+void FRenderer::FlushDecalGPUSum()
+{
+	if (!bDecalGPUSumStarted)
+		return;
+
+	FDecalStats& Stats = FDecalStats::Get();
+	Stats.PixelsShaded = DecalGPUSumPixels;
+	// 측정 중 GPU 클럭이 바뀌었으면 시간은 믿을 수 없어 버린다
+	if (bDecalGPUSumValid)
+		Stats.DrawGpuMs += (DecalGPUSumMs - Stats.DrawGpuMs) * 0.1;
+	bDecalGPUSumStarted = false;
+}
+
+void FRenderer::ReadDecalGPUQueries()
+{
+	ID3D11DeviceContext* Context = RenderCommand::GetContext();
+
+	// 같은 뷰의 패스를 더하려면 낸 순서대로 읽어야 한다. 다음에 쓸 슬롯이 가장 오래된 측정이다.
+	for (uint32 Offset = 0; Offset < DecalGPUQueryCount; ++Offset)
+	{
+		FDecalGPUQuery& Query = DecalGPUQueries[(NextDecalGPUQuery + Offset) % DecalGPUQueryCount];
+		if (!Query.bPending)
+			continue;
+
+		// 기다리지 않는다. 아직 GPU가 안 끝났으면 뒤의 측정도 안 끝났으니 다음에 다시 본다
+		D3D11_QUERY_DATA_TIMESTAMP_DISJOINT Disjoint{};
+		if (Context->GetData(Query.Disjoint.Get(), &Disjoint, sizeof(Disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+			break;
+
+		UINT64 BeginTime = 0, EndTime = 0;
+		D3D11_QUERY_DATA_PIPELINE_STATISTICS Pipeline{};
+		if (Context->GetData(Query.Begin.Get(), &BeginTime, sizeof(BeginTime), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+			Context->GetData(Query.End.Get(), &EndTime, sizeof(EndTime), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+			Context->GetData(Query.Pipeline.Get(), &Pipeline, sizeof(Pipeline), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+			break;
+
+		Query.bPending = false;
+
+		// 다른 뷰의 측정이 나왔으면 앞 뷰의 합은 다 모였다
+		if (bDecalGPUSumStarted && Query.StatsView != DecalGPUSumView)
+			FlushDecalGPUSum();
+		if (!bDecalGPUSumStarted)
+		{
+			bDecalGPUSumStarted = true;
+			bDecalGPUSumValid = true;
+			DecalGPUSumView = Query.StatsView;
+			DecalGPUSumMs = 0.0;
+			DecalGPUSumPixels = 0;
+		}
+
+		DecalGPUSumPixels += Pipeline.PSInvocations;
+		if (Disjoint.Disjoint || Disjoint.Frequency == 0 || EndTime < BeginTime)
+			bDecalGPUSumValid = false;
+		else
+			DecalGPUSumMs += static_cast<double>(EndTime - BeginTime) * 1000.0 / static_cast<double>(Disjoint.Frequency);
+	}
+}
+
+FRenderer::FDecalGPUQuery* FRenderer::BeginDecalGPUQuery()
+{
+	ReadDecalGPUQueries();
+
+	FDecalGPUQuery& Query = DecalGPUQueries[NextDecalGPUQuery];
+	if (Query.bPending)
+		return nullptr;
+
+	if (!Query.Disjoint)
+	{
+		ID3D11Device* Device = RenderCommand::GetDevice();
+		const D3D11_QUERY_DESC DisjointDesc{ D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+		const D3D11_QUERY_DESC TimestampDesc{ D3D11_QUERY_TIMESTAMP, 0 };
+		const D3D11_QUERY_DESC PipelineDesc{ D3D11_QUERY_PIPELINE_STATISTICS, 0 };
+		if (FAILED(Device->CreateQuery(&DisjointDesc, Query.Disjoint.GetAddressOf())) ||
+			FAILED(Device->CreateQuery(&TimestampDesc, Query.Begin.GetAddressOf())) ||
+			FAILED(Device->CreateQuery(&TimestampDesc, Query.End.GetAddressOf())) ||
+			FAILED(Device->CreateQuery(&PipelineDesc, Query.Pipeline.GetAddressOf())))
+		{
+			Query = FDecalGPUQuery{};
+			return nullptr;
+		}
+	}
+
+	ID3D11DeviceContext* Context = RenderCommand::GetContext();
+	Context->Begin(Query.Disjoint.Get());
+	Context->End(Query.Begin.Get());	// 타임스탬프는 End만 호출한다
+	Context->Begin(Query.Pipeline.Get());
+	Query.StatsView = DecalStatsView;
+	return &Query;
+}
+
+void FRenderer::EndDecalGPUQuery(FDecalGPUQuery* Query)
+{
+	if (!Query)
+		return;
+
+	ID3D11DeviceContext* Context = RenderCommand::GetContext();
+	Context->End(Query->Pipeline.Get());
+	Context->End(Query->End.Get());
+	Context->End(Query->Disjoint.Get());
+	Query->bPending = true;
+	NextDecalGPUQuery = (NextDecalGPUQuery + 1) % DecalGPUQueryCount;
+}
+
+bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, FDecalConstants& Constants, const FMatrix& BoxToWorld)
+{
+	UMaterial* Material = Decal.Material;
+	if (!Decal.bVisible || !Material || Material->Textures.Num() == 0 || !Material->Textures[0])
+		return false;
+
+	// 투영 박스가 화면 밖이면 그리지 않는다. Mesh 방식의 잘라 낸 메시도 이 박스 안에 있다.
+	// 래스터라이저도 화면 밖을 버리지만, 그 전에 드는 상수 갱신·바인딩·드로우 콜과 정점 셰이더를 아낀다.
+	if (!IsAABBInFrustum(Decal.Bounds, View.Frustum))
+		return false;
+
+	// 시간 Fade(컴포넌트)와 화면 크기 Fade(이 뷰)를 곱한다. 다 사라진 데칼은 그리지 않는다.
+	const float FadeAlpha = Decal.FadeAlpha * ComputeDecalScreenFade(Decal, View, Constants.ViewportWidth);
+	if (FadeAlpha <= 0.0f)
+		return false;
+
+	Constants.DecalToWorld = BoxToWorld;
+	Constants.WorldToDecal = Decal.WorldToDecal;
+	Constants.DecalColor = ColorWorkflow::ToShaderColor(Decal.DecalColor);
+	Constants.FadeAlpha = FadeAlpha;
+	// 머티리얼 두 번째 텍스처가 노멀맵이다. 없으면 셰이더가 노멀을 쓰지 않는다.
+	UTexture2D* NormalTexture = Material->Textures.Num() > 1 ? Material->Textures[1] : nullptr;
+	Constants.NormalMode = NormalTexture ? (Material->bFlipNormalGreen ? 2.0f : 1.0f) : 0.0f;
+	RenderCommand::UpdateBufferData(DecalCB.get(), &Constants);
+
+	RenderCommand::BindShaderResource(DecalTextureSlot, Material->Textures[0], EShaderBindFlagBits::Pixel);
+	// 노멀은 색이 아니라 방향 데이터다. 경로로 불러온 텍스처는 sRGB로 만들어지므로 감마 변환 없는 뷰로 읽는다.
+	if (NormalTexture)
+		RenderCommand::BindShaderResource(DecalNormalTextureSlot, NormalTexture, EShaderBindFlagBits::Pixel, true);
+	RenderCommand::BindSamplerState(0, Material->SamplerState, EShaderBindFlagBits::Pixel);
+	return true;
+}
+
+// 데칼마다 투영 박스를 그린다. 박스가 덮는 픽셀마다 깊이로 월드 위치를 복원하고, 박스 밖이면 셰이더가 버린다.
+void FRenderer::DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants, FTexture2D* SceneDepth)
+{
+	UStaticMesh* BoxMesh = UAssetManager::GetAssetByPath<UStaticMesh>("Cube");
+	if (!BoxMesh || !SceneDepth)
+		return;
+
+	RenderCommand::BindShaderProgram(DeferredDecalShader);
+	// 카메라가 박스 안에 들어가도 사라지지 않도록 뒷면만 그린다. 뒷면은 대개 벽 속에 있어 깊이 테스트는 하지 않는다.
+	RenderCommand::SetRasterizerState(ERasterizerState::SolidFront);
+	// 스텐실은 데칼 수신 비트가 0(받음)인 픽셀만 통과시킨다
+	RenderCommand::SetDepthStencilState(EDepthStencilState::DeferredDecalTest);
+	RenderCommand::BindShaderResource(DecalSceneDepthSlot, SceneDepth, EShaderBindFlagBits::Pixel);
+	RenderCommand::BindMesh(BoxMesh, 0);
+	const uint32 BoxIndexCount = BoxMesh->GetIndexBuffer(0)->GetIndexCount();
+
+	// Cube 에셋은 ±0.5라 두 배로 키워 데칼 로컬 ±1 박스에 맞춘다
+	const FMatrix UnitBoxScale = FMatrix::Identity.ApplyScale(FVector(2.0f, 2.0f, 2.0f));
+	for (const FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		if (!Decal || !BindDecal(*Decal, View, Constants, UnitBoxScale * Decal->DecalToWorld))
+			continue;
+		RenderCommand::DrawIndexed(BoxIndexCount);
+		++FDecalStats::Get().DrawnDecals;
+	}
+
+	LastMesh = nullptr;
+}
+
+// 데칼마다 받는 물체에서 박스 안만 잘라 낸 메시(SceneRenderer::BuildDecalReceivers)를 한 번에 그린다.
+void FRenderer::DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants)
+{
+	RenderCommand::BindShaderProgram(DecalMeshShader);
+	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
+	RenderCommand::SetDepthStencilState(EDepthStencilState::DecalMeshTest);
+	RenderCommand::BindConstantBuffer(0, ViewCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
+
+	for (const FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		if (!Decal || !Decal->MeshVertexBuffer || Decal->MeshVertices.IsEmpty())
+			continue;
+
+		if (!BindDecal(*Decal, View, Constants, Decal->DecalToWorld))
+			continue;
+
+		RenderCommand::BindVertexBuffer(Decal->MeshVertexBuffer.get());
+		RenderCommand::Draw(Decal->MeshVertices.Num());
+
+		FDecalStats& Stats = FDecalStats::Get();
+		++Stats.DrawnDecals;
+		Stats.DrawnTriangles += static_cast<uint32>(Decal->MeshVertices.Num() / 3);
+	}
+
+	// 뒤따르는 불투명 패스가 처음부터 다시 바인딩하도록 기록을 비운다.
+	LastMesh = nullptr;
+	LastMaterial = nullptr;
+}
+
 void FRenderer::RenderOpaque(const FMatrix& ViewProjection, bool bAfterPrepass)
 {
     const ESceneMeshPass Pass = bAfterPrepass ? ESceneMeshPass::OpaqueAfterPrepass : ESceneMeshPass::Color;
@@ -252,6 +590,17 @@ void FRenderer::RenderTranslucent(const FMatrix& ViewProjection)
 	RenderPackets.Reset();
 	FirstTranslucentIndex = 0;
 	StaticGroups.clear();   // 묶음 메모리는 World 것이므로 이번 프레임이 끝나면 놓는다
+}
+
+// 데칼 수신 비트는 깊이를 처음 쓰는 패스에서만 기록한다. Lit은 Prepass, Unlit은 불투명 Color 패스다.
+// 나머지 패스는 BindMaterial이 고른 깊이 상태(LessEqual 읽기 전용, 반투명 ReadOnly)를 그대로 써야 한다.
+static bool ShouldWriteDecalStencil(const UMaterial* Material, ESceneMeshPass Pass)
+{
+	if (Pass == ESceneMeshPass::DepthPrepass)
+		return true;
+	return Pass == ESceneMeshPass::Color && Material
+		&& Material->BlendState == EBlendState::Opaque
+		&& Material->DepthStencilState == EDepthStencilState::Default;
 }
 
 // 스태틱 메시 묶음을 정렬 키 순서로 그린다. 바인딩은 묶음마다 한 번, 항목마다는 칸 바인딩과 드로우만 한다.
@@ -281,6 +630,14 @@ void FRenderer::DrawStaticGroups(ESceneMeshPass Pass)
 
 		for (const FStaticDrawItem& Item : Group->Items)
 		{
+			//Decal을 받는 경우 Stencil의 8번째 비트를 0(Decal을 받겠다는 뜻)으로 남긴다.
+			if (ShouldWriteDecalStencil(BoundMaterial, Pass))
+			{
+				const bool bRecieveDecal = Item.Proxy && Item.Proxy->ReceivesDecal();
+				const int32 Ref = bRecieveDecal ? 0 : DecalStencilBit;
+				RenderCommand::SetDepthStencilState(EDepthStencilState::DecalReceiverWrite, Ref);
+			}
+
 			if (bUsePerObjectSlots && Item.Slot != InvalidObjectSlot)
 			{
 				RenderCommand::BindConstantBufferRange(2, PerObjectSlotCB.get(), Item.Slot * PerObjectSlotConstants, PerObjectSlotConstants, EShaderBindFlagBits::Vertex);
@@ -367,6 +724,15 @@ void FRenderer::DrawPackets(uint32 Begin, uint32 End, const FMatrix& ViewProject
 		}
 		if (Pass != ESceneMeshPass::DepthPrepass && (RenderPacket.Material != LastMaterial || RenderPacket.MaterialParamData))
 			UpdateMaterialParams(RenderPacket);
+
+		//Decal을 받는 경우 Stencil의 8번째 비트를 0(Decal을 받겠다는 뜻)으로 남긴다.
+		if (ShouldWriteDecalStencil(RenderPacket.Material, Pass))
+		{
+			const bool bRecieveDecal = RenderPacket.Proxy && RenderPacket.Proxy->ReceivesDecal();
+			const int32 Ref = bRecieveDecal ? 0 : DecalStencilBit;
+			RenderCommand::SetDepthStencilState(EDepthStencilState::DecalReceiverWrite, Ref);
+		}
+
 		if (bUsePerObjectSlots && RenderPacket.Slot != InvalidObjectSlot)
 		{
 			RenderCommand::BindConstantBufferRange(2, PerObjectSlotCB.get(), RenderPacket.Slot * PerObjectSlotConstants, PerObjectSlotConstants, EShaderBindFlagBits::Vertex);

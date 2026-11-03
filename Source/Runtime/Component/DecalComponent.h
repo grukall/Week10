@@ -1,0 +1,167 @@
+#pragma once
+#include "EnginePCH.h"
+#include "SceneComponent.h"
+#include "Math/Vector.h"
+#include "Math/Color.h"
+#include "Core/EngineString.h"
+
+class FLineBatcher;
+class UMaterial;
+
+// BlendType에 저장하는 값. 에디터 콤보 순서와 같다.
+enum class EDecalBlendType : uint32
+{
+	Albedo,
+	Emissive,
+};
+
+class UDecalComponent : public USceneComponent
+{
+	DECLARE_CLASS(UDecalComponent, USceneComponent)
+	REFLECT_START(UDecalComponent)
+		PROPERTY(DecalSize)
+		PROPERTY(DecalColor)
+		PROPERTY(FadeScreenSize)
+		PROPERTY(FadeStartDelay)
+		PROPERTY(FadeDuration)
+		PROPERTY(FadeInDuration)
+		PROPERTY(FadeInStartDelay)
+		PROPERTY(bDestroyOwnerAfterFade)
+		PROPERTY(DecalMaterial)
+		PROPERTY(BlendType)
+		FUNCTION(GetFadeStartDelay)
+		FUNCTION(GetFadeDuration)
+		FUNCTION(GetFadeInStartDelay)
+		FUNCTION(GetFadeInDuration)
+		FUNCTION(SetFadeOut)
+		FUNCTION(SetFadeIn)
+		FUNCTION(SetFadeScreenSize)
+		FUNCTION(SetDecalColor)
+		FUNCTION(SetDecalMaterial)
+		FUNCTION(GetDecalMaterial)
+	REFLECT_END()
+
+public:
+
+	UDecalComponent();
+	virtual ~UDecalComponent() = default;
+
+	//=====================================
+	//1. Decal 외형
+	/** Decal size in local space (does not include the component scale), technically redundant but there for convenience */
+	FVector DecalSize;
+
+	/** Decal color, can be accessed using the material Decal Color node. */
+	FLinearColor DecalColor = FLinearColor::White;
+
+
+	void DrawDebug(FLineBatcher* LineBatcher) const;
+
+	//=====================================
+	//2. Fade
+
+	//데칼이 화면에서 차지하는 크기가 이 값보다 작아지면 흐려지다가 사라짐, 0이면 끔.
+	//데칼 박스를 감싸는 구의 반지름 * 카메라까지의 거리
+	float FadeScreenSize = 0.0f;
+
+
+	//시간 Fade
+	//생긴 뒤 얼마나 기다렸다가 나타나기 시작할지, 그동안 alpha는 0
+	float FadeInStartDelay = 0.0f;
+
+	//0에서 1까지 나타나는데 걸리는 시간, 0이면 fadein없이 바로 보임
+	float FadeInDuration = 0.0f;
+
+	//셍긴 뒤 얼마나 유지하다가 사라지기 시작할지
+	float FadeStartDelay = 0.0f;
+
+	//1에서 0까지 사라지는 데 걸린 시간
+	float FadeDuration = 0.0f;
+
+	//완전히 사라지면(alpha = 0) 액터를 삭제할지
+	bool bDestroyOwnerAfterFade = false;
+
+
+	// Decal을 어떻게 그릴지
+	// Albedo : 조명 전에 표면 Albedo를 Decal 색으로 바꾼다. 조명을 받는다. (기본)
+	// Emissive : 조명이 끝난 씬 컬러에 Decal 색을 더한다. 어두운 곳에서도 보여 페이크 라이트로 쓴다.
+	// 리플렉션이 enum을 몰라 정수로 저장한다. 값은 EDecalBlendType 순서다.
+	uint32 BlendType = 0;
+	EDecalBlendType GetBlendType() const { return BlendType == static_cast<uint32>(EDecalBlendType::Emissive) ? EDecalBlendType::Emissive : EDecalBlendType::Albedo; }
+
+	float GetFadeStartDelay() const { return FadeStartDelay; }
+	float GetFadeDuration() const { return FadeDuration; }
+	float GetFadeInStartDelay() const { return FadeInStartDelay; }
+	float GetFadeInDuration() const { return FadeInDuration; }
+
+	/**
+	* Sets the decal's fade start time, duration and if the owning actor should be destroyed after the decal is fully faded out.
+	* The default value of 0 for FadeStartDelay and FadeDuration makes the decal persistent. See DecalLifetimeOpacity material
+	* node to control the look of "fading out."
+	*
+	* @param StartDelay - Time in seconds to wait before beginning to fade out the decal.
+	* @param Duration - Time in second for the decal to fade out.
+	* @param DestroyOwnerAfterFade - Should the owning actor automatically be destroyed after it is completely faded out.
+	*/
+	void SetFadeOut(float StartDelay, float Duration, bool DestroyOwnerAfterFade = true);
+	void SetFadeIn(float StartDelay, float Duration);
+	void SetFadeScreenSize(float NewFadeScreenSize);
+	void SetDecalColor(const FLinearColor& Color);
+
+	void SetTexture(class UTexture2D* InTexture);
+	void SetTexture(const FString& InTexturePath);
+	// 머티리얼 두 번째 텍스처. Lit에서 DBuffer 노멀로 쌓여 표면 노멀을 바꾼다.
+	void SetNormalTexture(class UTexture2D* InTexture);
+	class UTexture2D* GetTexture() const;
+	class UTexture2D* GetNormalTexture() const;
+	// 노멀맵의 G 채널 방향(OpenGL / DirectX)이 다를 때 켠다
+	void SetFlipNormalGreen(bool bFlip);
+	bool GetFlipNormalGreen() const;
+
+	void SetDecalMaterial(UMaterial* NewDecalMaterial);
+	UMaterial* GetDecalMaterial() const;
+
+public:
+
+	//=====================================
+	//3, Decal Proxy
+	struct FDeferredDecalSceneProxy* SceneProxy = nullptr;
+	FDeferredDecalSceneProxy* CreateSceneProxy();
+
+	void MarkSceneProxyDirty();
+	virtual void PostEditChangeProperty(const FProperty& Property) override;
+	virtual void OnTransformDirty() override;
+
+protected:
+	/** Decal material. */
+	UMaterial* DecalMaterial = nullptr;
+
+public:
+
+	//~ Begin UActorComponent Interface
+	virtual void InitializeComponent() override;
+	virtual void BeginPlay() override;
+	virtual void EndPlay() override;
+	virtual void TickComponent(float DeltaTime) override;
+	virtual void SetActive(bool bNewActive);
+	//~ End UActorComponent Interface
+
+
+	//~Begin UObject Interface
+	virtual void Serialize(FStructuredArchive::FRecord Record) override;
+	//~ End UObject Interface
+
+private:
+	// BeginPlay부터 흐른 시간. 에디터에서는 Tick하지 않으므로 Fade 없이 항상 보인다(UE와 같다).
+	float LifeTime = 0.0f;
+	// SetFadeIn/SetFadeOut을 부른 시각. UE처럼 지연은 호출한 순간부터 센다.
+	float FadeInStartTime = 0.0f;
+	float FadeOutStartTime = 0.0f;
+
+	// 시간 Fade 알파. UE DecalLifetimeOpacity처럼 페이드인과 페이드아웃 중 작은 값이다.
+	float ComputeLifetimeAlpha() const;
+	// 이 데칼 전용 머티리얼 인스턴스를 돌려준다. 공유 에셋이면 복제한다.
+	UMaterial* EnsureMaterialInstance();
+	void SetTextureSlot(int32 Slot, class UTexture2D* InTexture);
+	void UpdateProxyFadeAlpha();
+};

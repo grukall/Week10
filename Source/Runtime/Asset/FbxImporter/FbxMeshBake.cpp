@@ -11,7 +11,7 @@
 namespace
 {
     // CPU 데이터 형식 또는 FBX 변환 규칙(UV/좌표계 등)이 바뀌면 올린다.
-    constexpr uint32 BakeVersion = 1;
+    constexpr uint32 BakeVersion = 2;
     constexpr uint32 MaxGroupCount = 1024;
 
     enum class EFbxMeshKind : uint32

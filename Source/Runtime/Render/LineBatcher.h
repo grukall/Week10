@@ -33,7 +33,7 @@ public:
 		const FVector4& Color);
 
 	void Flush();
-	void OnRender(const FMatrix& ViewProjection);
+	void OnRender(const FMatrix& ViewProjection, EDepthStencilState DepthState = EDepthStencilState::Default);
 
 private:
 	FRenderer* Renderer;

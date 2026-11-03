@@ -41,6 +41,7 @@ public:
 	void CreateDefaultMaterial();
 	void CreateParticleMaterial();
 	void CreateBillboardMaterial();
+	void CreateDecalMaterial();
 
 	template <typename T>
 	static T* GetAssetByPath(const FString& Path)

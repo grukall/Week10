@@ -34,6 +34,7 @@ class UPrimitiveComponent :public USceneComponent
 		PROPERTY(bVisible)
 		PROPERTY(bCastShadow)
 		PROPERTY(bReceiveShadow)
+		PROPERTY(bRecieveDecal)
 		FUNCTION(GetRenderMesh)
 		FUNCTION(GetNumMaterials)
 		FUNCTION(GetMaterial)
@@ -74,6 +75,8 @@ public:
 	void SetCastShadow(bool bValue) { bCastShadow = bValue; MarkRenderStateDirty(); }
 	bool ReceivesShadow() const { return bReceiveShadow; }
 	void SetReceiveShadow(bool bValue) { bReceiveShadow = bValue; MarkRenderStateDirty(); }
+	bool ReceivesDecal() const { return bRecieveDecal; }
+	void SetReceiveDecal(bool bValue) { bRecieveDecal = bValue; MarkRenderStateDirty(); }
 	virtual void PostEditChangeProperty(const FProperty& Property) override;
 
 	bool IsVisible() const { return bVisible; }
@@ -130,6 +133,9 @@ protected:
 	bool bGenerateOverlapEvents = true;
 	// true면 Sweep 이동을 막고 Hit 이벤트를 낸다
 	bool bBlockComponent = false;
+
+	//true면 데칼이 이 프리미티브 위에 그려질 수 있다.
+	bool bRecieveDecal = true;
 
 	// 도형 크기처럼 판정 결과가 바뀌는 값을 고친 자식 클래스도 다음 Tick 갱신을 예약할 수 있게 연다.
 	void MarkOverlapsDirty();

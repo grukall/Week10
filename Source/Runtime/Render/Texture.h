@@ -34,6 +34,7 @@ public:
 	ID3D11ShaderResourceView* GetRawSRV() const { return RawSRV ? RawSRV.Get() : SRV.Get(); }
 	ID3D11RenderTargetView* GetRTV() const { return RTV.Get(); }
 	ID3D11DepthStencilView* GetDSV() const { return DSV.Get(); }
+	ID3D11DepthStencilView* GetReadOnlyDSV() const { return ReadOnlyDSV.Get(); }
 protected:
 	// 크기는 API 구조체가 아니라 숫자로 들고 있는다.
 	// Texture3D가 D3D11_TEXTURE3D_DESC로 와도 여기는 그대로 쓴다.
@@ -49,5 +50,6 @@ protected:
 	ComPtr<ID3D11ShaderResourceView> RawSRV;
 	ComPtr<ID3D11RenderTargetView> RTV;
 	ComPtr<ID3D11DepthStencilView> DSV;
+	ComPtr<ID3D11DepthStencilView> ReadOnlyDSV;
 
 };

@@ -10,8 +10,38 @@ enum class EStatFlags : uint32
 	FPS     = 1 << 0,
 	Memory  = 1 << 1,
 	Profile = 1 << 2,
+	Decal   = 1 << 3,
 };
 DEFINE_ENUM_OPERATORS(EStatFlags)
+
+// stat decal 오버레이에 보여 줄 데칼 수치. 렌더러가 채우고 에디터가 읽는다.
+struct FDecalStats
+{
+	// 그리기 수치. 뷰마다 DrawDecals 시작에 0으로 되돌리므로 마지막에 그린 뷰의 값이 남는다.
+	bool bMeshMethod = false;
+	uint32 TotalDecals = 0;
+	uint32 DrawnDecals = 0;		// 데칼 하나에 드로우 콜 하나다
+	uint32 DrawnTriangles = 0;	// Mesh 방식에서 잘라 낸 메시의 삼각형 수
+
+	// 비용. 시간은 프레임마다 흔들려서 지수 평균으로 둔다. GPU 값은 몇 프레임 늦게 들어온다.
+	double DrawCpuMs = 0.0;		// 데칼 드로우를 기록하는 데 쓴 CPU 시간
+	double DrawGpuMs = 0.0;		// 데칼 드로우가 GPU에서 걸린 시간
+	uint64 PixelsShaded = 0;	// 데칼 픽셀 셰이더 실행 수. 스텐실로 일찍 떨어진 픽셀은 빠지고 discard한 픽셀은 들어간다
+
+	// Mesh 방식 빌드 수치. 다시 만든 데칼이 있는 프레임에만 갱신해 마지막 빌드 결과를 남긴다.
+	uint32 RebuiltDecals = 0;
+	uint32 Receivers = 0;			// Broad phase(장면 BVH + AABB)를 통과한 받는 물체 수
+	uint32 TrianglesTested = 0;		// 삼각형 BVH가 돌려준 삼각형 수
+	uint32 TrianglesPassedSAT = 0;	// SAT로 박스와 겹친다고 나온 삼각형 수
+	uint32 TrianglesClipped = 0;	// Clip 뒤에 만들어진 삼각형 수
+	double BuildMs = 0.0;
+
+	static FDecalStats& Get()
+	{
+		static FDecalStats Stats;
+		return Stats;
+	}
+};
 
 // 콘솔 stat 명령의 상태와 표시용 수치만 보관한다.
 // 그리기는 Viewport를 소유한 에디터 쪽이 맡아 엔진이 ImGui에 의존하지 않게 한다.

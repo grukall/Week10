@@ -107,6 +107,8 @@ function LinkLuaJIT()
 	filter {}
 
 	links { "lua51" }
+	-- 미리 빌드된 lua51.lib에는 vc140.pdb가 없어 LNK4099 경고가 대량으로 뜬다
+	linkoptions { "/ignore:4099" }
 end
 
 
@@ -168,6 +170,18 @@ project "Scripts"
 	files
 	{
 		"Assets/Scripts/**.lua",
+	}
+
+-- 쉐이더·아이콘 등 엔진 리소스를 Solution Explorer에서 열어 보기 위한 프로젝트. 컴파일하지 않는다(Utility).
+-- Scripts와 같은 이유로 location을 리소스 폴더로 둔다.
+project "Resources"
+	location "Resources"
+	kind     "Utility"
+	CommonSettings()
+
+	files
+	{
+		"Resources/**",
 	}
 
 

@@ -42,10 +42,13 @@ void FSettingsPanel::OnRender()
 	ImGui::SeparatorText("Show");
 
 	ImGui::Checkbox("Primitives", &Settings.bDrawPrimitives);
+	ImGui::Checkbox("Skeletal Meshes", &Settings.bDrawSkeletalMeshes);
 	ImGui::Checkbox("Bounding Boxes", &Settings.bDrawBoundingBox);
 	ImGui::Checkbox("Object UUID", &Settings.bShowUUID);
 	ImGui::Checkbox("Grid", &Settings.bDrawGrid);
 	ImGui::Checkbox("Exponential Height Fog", &Settings.bExponentialHeightFog);
+	ImGui::Checkbox("Decal", &Settings.bDecal);
+	ImGui::Checkbox("Decal Mesh Method", &Settings.bDecalMeshMethod);
 	ImGui::Checkbox("Tile Light Count", &Settings.bVisualizeTileLightCount);
 	ImGui::Checkbox("Vignette", &Settings.bVignette);
 
@@ -109,7 +112,7 @@ void FSettingsPanel::OnRender()
 
 	UCameraComponent* CamCom = World->GetMainCamera()->GetCameraComponent();
 
-	ImGui::SliderFloat("Move Speed", &Settings.CameraSpeed, 0.1f, 10.0f, "%.2f");
+	ImGui::SliderFloat("Move Speed", &Settings.CameraSpeed, 0.1f, 100.0f, "%.2f");
 	CamCom->SetMoveSpeed(Settings.CameraSpeed);
 
 	ImGui::SliderFloat("Rotate Sensitivity", &Settings.MouseSensitivity, 0.01f, 1.0f, "%.2f");
@@ -156,10 +159,13 @@ bool FSettingsPanel::SaveSettings() const
 	// 섹션은 Settings 패널의 섹션과 같은 순서로 쓴다
 	File << "[Show]\n";
 	File << "DrawPrimitives=" << Settings.bDrawPrimitives << "\n";
+	File << "DrawSkeletalMeshes=" << Settings.bDrawSkeletalMeshes << "\n";
 	File << "DrawBoundingBox=" << Settings.bDrawBoundingBox << "\n";
 	File << "ShowUUID=" << Settings.bShowUUID << "\n";
 	File << "DrawGrid=" << Settings.bDrawGrid << "\n";
 	File << "ExponentialHeightFog=" << Settings.bExponentialHeightFog << "\n";
+	File << "Decal=" << Settings.bDecal << "\n";
+	File << "DecalMeshMethod=" << Settings.bDecalMeshMethod << "\n";
 	File << "\n";
 
 	File << "[Rendering]\n";
@@ -312,10 +318,13 @@ bool FSettingsPanel::LoadSettings()
                     }
                 }
                 if (Key == "DrawPrimitives") Settings.bDrawPrimitives = std::stoi(ValueStr);
+				else if (Key == "DrawSkeletalMeshes") Settings.bDrawSkeletalMeshes = std::stoi(ValueStr);
 				else if (Key == "DrawBoundingBox") Settings.bDrawBoundingBox = std::stoi(ValueStr);
 				else if (Key == "ShowUUID") Settings.bShowUUID = std::stoi(ValueStr);
 				else if (Key == "DrawGrid") Settings.bDrawGrid = std::stoi(ValueStr);
 				else if (Key == "ExponentialHeightFog") Settings.bExponentialHeightFog = std::stoi(ValueStr);
+				else if (Key == "Decal") Settings.bDecal = std::stoi(ValueStr);
+				else if (Key == "DecalMeshMethod") Settings.bDecalMeshMethod = std::stoi(ValueStr);
 
 				else if (Key == "EnableFXAA") Settings.bEnableFXAA = std::stoi(ValueStr);
 				else if (Key == "DepthView") Settings.bDepthView = std::stoi(ValueStr);

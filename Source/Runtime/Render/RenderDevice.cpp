@@ -230,9 +230,10 @@ void FRenderDevice::CreateStates()
 		Device->CreateDepthStencilState(&Desc, DepthStencilStates[(uint8)EDepthStencilState::Disabled].GetAddressOf());
 
 		// 깊이 없이 선택 메시 영역의 스텐실을 올린다 (참조값 0 기준).
+		// 데칼 수신 비트는 건드리지도, 비교하지도 않도록 하위 비트만 쓴다.
 		Desc.StencilEnable = TRUE;
-		Desc.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK;
-		Desc.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK;
+		Desc.StencilReadMask = OutlineStencilMask;
+		Desc.StencilWriteMask = OutlineStencilMask;
 		Desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
 		Desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
 		Desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_INCR_SAT;
@@ -246,6 +247,35 @@ void FRenderDevice::CreateStates()
 		Desc.FrontFace.StencilFunc = D3D11_COMPARISON_EQUAL;
 		Desc.BackFace = Desc.FrontFace;
 		Device->CreateDepthStencilState(&Desc, DepthStencilStates[(uint8)EDepthStencilState::StencilOutline].GetAddressOf());
+
+		// ---------- 데칼 수신 (DecalStencilBit) ----------
+		// 메시: Default처럼 깊이를 쓰면서, 깊이를 통과한 픽셀의 수신 비트를 참조값으로 바꾼다.
+		// 가려진 픽셀은 KEEP이라 앞에 있는 물체의 값만 남는다.
+		Desc.DepthEnable = TRUE;
+		Desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		Desc.DepthFunc = D3D11_COMPARISON_LESS;
+		Desc.StencilEnable = TRUE;
+		Desc.StencilReadMask = DecalStencilBit;
+		Desc.StencilWriteMask = DecalStencilBit;
+		Desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+		Desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+		Desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+		Desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+		Desc.BackFace = Desc.FrontFace;
+		Device->CreateDepthStencilState(&Desc, DepthStencilStates[(uint8)EDepthStencilState::DecalReceiverWrite].GetAddressOf());
+
+		// 데칼: 스텐실은 읽기만 하고, 수신 비트가 참조값(0)과 같은 픽셀만 PS까지 보낸다.
+		Desc.StencilWriteMask = 0;
+		Desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+		Desc.FrontFace.StencilFunc = D3D11_COMPARISON_EQUAL;
+		Desc.BackFace = Desc.FrontFace;
+		Desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+		Desc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+		Device->CreateDepthStencilState(&Desc, DepthStencilStates[(uint8)EDepthStencilState::DecalMeshTest].GetAddressOf());
+
+		// Deferred 박스는 뒷면이 벽 속에 있어 깊이 테스트 없이 스텐실만 본다
+		Desc.DepthEnable = FALSE;
+		Device->CreateDepthStencilState(&Desc, DepthStencilStates[(uint8)EDepthStencilState::DeferredDecalTest].GetAddressOf());
 	}
 
 	// ---------- Blend ----------
@@ -274,6 +304,17 @@ void FRenderDevice::CreateStates()
 		Desc.RenderTarget[0].BlendEnable = FALSE;
 		Desc.RenderTarget[0].RenderTargetWriteMask = 0;
 		Device->CreateBlendState(&Desc, BlendStates[(uint8)EBlendState::NoColorWrite].GetAddressOf());
+
+		// 빛을 더한다. 색은 Src × SrcA + Dst로 원래 색을 줄이지 않고, 알파는 원래 값을 유지한다.
+		// 바로 위 NoColorWrite가 쓰기 마스크를 0으로 바꿔 두었으므로 다시 켠다.
+		Desc.RenderTarget[0].BlendEnable = TRUE;
+		Desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+		Desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+		Desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+		Desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+		Desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+		Desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+		Device->CreateBlendState(&Desc, BlendStates[(uint8)EBlendState::Emissive].GetAddressOf());
 	}
 
 	// ---------- Sampler ----------

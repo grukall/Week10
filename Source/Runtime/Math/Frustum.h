@@ -45,3 +45,11 @@ inline EFrustumTest ClassifyBoxInFrustum(const FBox& Box, const FFrustumPlanes& 
 
 	return InOutPlaneMask == 0 ? EFrustumTest::Inside : EFrustumTest::Intersect;
 }
+
+inline bool IntersectsAABB(const FAABB& A, const FAABB& B)
+{
+	if (std::abs(A.Center.X - B.Center.X) > (A.Extent.X + B.Extent.X)) return false;
+	if (std::abs(A.Center.Y - B.Center.Y) > (A.Extent.Y + B.Extent.Y)) return false;
+	if (std::abs(A.Center.Z - B.Center.Z) > (A.Extent.Z + B.Extent.Z)) return false;
+	return true;
+}

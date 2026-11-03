@@ -18,10 +18,14 @@ struct FEditorSettings
 	// 에디터 렌더 옵션과 편집 Quad 레이아웃의 영구 설정을 한곳에 담는다.
 	// Show: 화면에 무엇을 그릴지
 	bool bDrawPrimitives = true;
+	bool bDrawSkeletalMeshes = true;
 	bool bDrawBoundingBox = false;
 	bool bShowUUID = false;
 	bool bDrawGrid = true;
 	bool bExponentialHeightFog = true;
+	bool bDecal = true;
+	// 데칼을 받는 메시를 다시 그린다. 끄면 데칼 박스를 그리고 깊이로 위치를 복원한다
+	bool bDecalMeshMethod = false;
 	bool bVisualizeTileLightCount = false;
 
 	// Rendering

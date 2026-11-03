@@ -1,14 +1,38 @@
 #include "EnginePCH.h"
 #include "SkinnedMeshComponent.h"
+#include "Collision/HitResult.h"
+#include "Collision/Ray.h"
 #include "Render/RenderCommand.h"
 #include "Render/SkeletalMesh.h"
 
 #include <algorithm>
-#include <cstring>
 
 USkinnedMeshComponent::USkinnedMeshComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
+}
+
+void USkinnedMeshComponent::Serialize(json& Handle, bool bIsLoading)
+{
+    Super::Serialize(Handle, bIsLoading);
+    if (bIsLoading)
+    {
+        // 리플렉션으로 복원된 에셋에 맞춰 런타임 버퍼를 만들고, 로드한 재질 덮어쓰기는 보존한다.
+        SetSkeletalMeshData(SkeletalMesh ? &SkeletalMesh->GetMeshData() : nullptr);
+        MarkRenderStateDirty();
+        OnTransformDirty();
+    }
+}
+
+void USkinnedMeshComponent::Serialize(FStructuredArchive::FRecord Record)
+{
+    Super::Serialize(Record);
+    if (Record.GetUnderlyingArchive().IsLoading())
+    {
+        SetSkeletalMeshData(SkeletalMesh ? &SkeletalMesh->GetMeshData() : nullptr);
+        MarkRenderStateDirty();
+        OnTransformDirty();
+    }
 }
 
 void USkinnedMeshComponent::TickComponent(float DeltaTime)
@@ -52,7 +76,8 @@ void USkinnedMeshComponent::RefreshMesh(int32 BoneIndex)
 		|| (BoneIndex != INDEX_NONE && !SkeletalMeshData->RefBones.IsValidIndex(BoneIndex)))
 		return;
 
-	RefreshBoneTransforms(BoneIndex); // 자식이 변경 범위를 누적하고 MarkSkinningDirty를 호출
+	PrepareDirtyBoneRanges();
+	RefreshBoneTransforms(BoneIndex);
 
 	if (!bSkinningDirty)
 		return;
@@ -64,6 +89,7 @@ void USkinnedMeshComponent::RefreshMesh(int32 BoneIndex)
         OnTransformDirty();
     }
 
+	ClearDirtyBoneRanges();
 	bSkinningDirty = false;
 }
 
@@ -85,6 +111,64 @@ const FVertexBuffer* USkinnedMeshComponent::GetDynamicVertexBuffer() const
 FBox USkinnedMeshComponent::CalcLocalBounds() const
 {
 	return LocalBounds;
+}
+
+bool USkinnedMeshComponent::LineTraceComponent(const FRay& WorldRay, FHitResult& OutHit)
+{
+    const FRay LocalRay = ToLocalRay(WorldRay, GetWorldMatrix());
+    float T = FLT_MAX;
+    if (!LineTraceComponentLocal(LocalRay, T))
+        return false;
+
+    OutHit.HitComponent = this;
+    OutHit.Distance = T;
+    OutHit.ImpactPoint = WorldRay.PointAt(T);
+    OutHit.FaceIndex = INDEX_NONE;
+    return true;
+}
+
+bool USkinnedMeshComponent::LineTraceComponentLocal(const FRay& LocalRay, float& OutT)
+{
+    if (!SkeletalMeshData || SkinnedVertices.IsEmpty())
+        return false;
+
+    float BoundsT;
+    if (!RayIntersectsAABB(LocalRay, LocalBounds.Min, LocalBounds.Max, BoundsT)
+        || BoundsT >= OutT)
+    {
+        return false;
+    }
+
+    const TArray<uint32>& Indices = SkeletalMeshData->Indices;
+    const uint32 IndexCount = static_cast<uint32>(Indices.Num());
+    const uint32 VertexCount = static_cast<uint32>(SkinnedVertices.Num());
+    float NearestT = OutT;
+    bool bHit = false;
+
+    for (uint32 Index = 0; Index + 2 < IndexCount; Index += 3)
+    {
+        const uint32 I0 = Indices[Index];
+        const uint32 I1 = Indices[Index + 1];
+        const uint32 I2 = Indices[Index + 2];
+        if (I0 >= VertexCount || I1 >= VertexCount || I2 >= VertexCount)
+            continue;
+
+        float TriangleT;
+        if (RayIntersectsTriangle(LocalRay,
+            SkinnedVertices[I0].Position,
+            SkinnedVertices[I1].Position,
+            SkinnedVertices[I2].Position,
+            TriangleT) && TriangleT < NearestT)
+        {
+            NearestT = TriangleT;
+            bHit = true;
+        }
+    }
+
+    // 로컬 레이 방향을 정규화하지 않으므로 기존 최근접 월드 레이 t와 비교할 수 있다.
+    if (bHit)
+        OutT = NearestT;
+    return bHit;
 }
 
 int32 USkinnedMeshComponent::GetNumMaterials() const
@@ -152,11 +236,65 @@ void USkinnedMeshComponent::MarkSkinningDirty()
 	if (!SkeletalMeshData)
 		return;
 
+	ClearDirtyBoneRanges();
+	if (!SkeletalMeshData->RefBones.IsEmpty())
+	{
+		DirtyBoneStarts.Add(0);
+		DirtyBoneEndIndices[0] = SkeletalMeshData->RefBones.Num();
+	}
 	bSkinningDirty = true;
+}
+
+void USkinnedMeshComponent::MarkSkinningDirty(int32 FirstBone, int32 EndBone)
+{
+	if (!SkeletalMeshData)
+		return;
+	if (!DirtyBoneEndIndices.IsValidIndex(FirstBone) || EndBone <= FirstBone
+		|| EndBone > SkeletalMeshData->RefBones.Num())
+	{
+		MarkSkinningDirty();
+		return;
+	}
+	int32& SavedEnd = DirtyBoneEndIndices[FirstBone];
+	if (SavedEnd == INDEX_NONE)
+		DirtyBoneStarts.Add(FirstBone);
+	SavedEnd = std::max(SavedEnd, EndBone);
+	bSkinningDirty = true;
+}
+
+void USkinnedMeshComponent::PrepareDirtyBoneRanges()
+{
+	std::sort(DirtyBoneStarts.begin(), DirtyBoneStarts.end());
+	int32 WriteIndex = 0;
+	for (int32 ReadIndex = 0; ReadIndex < DirtyBoneStarts.Num(); ++ReadIndex)
+	{
+		const int32 FirstBone = DirtyBoneStarts[ReadIndex];
+		if (WriteIndex > 0)
+		{
+			const int32 PreviousStart = DirtyBoneStarts[WriteIndex - 1];
+			if (FirstBone <= DirtyBoneEndIndices[PreviousStart])
+			{
+				DirtyBoneEndIndices[PreviousStart] = std::max(DirtyBoneEndIndices[PreviousStart], DirtyBoneEndIndices[FirstBone]);
+				DirtyBoneEndIndices[FirstBone] = INDEX_NONE;
+				continue;
+			}
+		}
+		DirtyBoneStarts[WriteIndex++] = FirstBone;
+	}
+	DirtyBoneStarts.SetNum(WriteIndex, false);
+}
+
+void USkinnedMeshComponent::ClearDirtyBoneRanges()
+{
+	for (int32 FirstBone : DirtyBoneStarts)
+		DirtyBoneEndIndices[FirstBone] = INDEX_NONE;
+	DirtyBoneStarts.Reset();
 }
 
 void USkinnedMeshComponent::InitializeSkinningResources()
 {
+	DirtyBoneEndIndices.Empty();
+	DirtyBoneStarts.Empty();
 	BoneVertexIndices.Empty();
 	DirtyVertexFlags.Empty();
 	DirtyVertexIndices.Empty();
@@ -179,6 +317,7 @@ void USkinnedMeshComponent::InitializeSkinningResources()
 	NormalMatrices.SetNum(SkeletalMeshData->RefBones.Num());
 	SkinnedVertices.SetNum(SkeletalMeshData->Vertices.Num());
 	BoneVertexIndices.SetNum(SkeletalMeshData->RefBones.Num());
+	DirtyBoneEndIndices.Init(INDEX_NONE, SkeletalMeshData->RefBones.Num());
 	DirtyVertexFlags.Init(0, SkinnedVertices.Num());
 	VertexBoundsBlocks.SetNum((SkinnedVertices.Num() + BoundsBlockSize - 1) / BoundsBlockSize);
 	for (int32 VertexIndex = 0; VertexIndex < SkinnedVertices.Num(); ++VertexIndex)
@@ -200,23 +339,22 @@ void USkinnedMeshComponent::InitializeSkinningResources()
 void USkinnedMeshComponent::UpdateSkinning()
 {
 	DirtyVertexIndices.Reset();
-	for (int32 BoneIndex = 0; BoneIndex < SkinMatrices.Num(); ++BoneIndex)
+	for (int32 FirstBone : DirtyBoneStarts)
 	{
-		const FMatrix NewMatrix = SkeletalMeshData->RefBones[BoneIndex].InverseBindMatrix * ComponentSpaceTransforms[BoneIndex];
-		// FMatrix의 ==는 오차 비교이므로, 작은 이동을 누락하지 않도록 저장된 원소를 비교한다.
-		if (!bNeedsFullSkinning && std::memcmp(NewMatrix.M, SkinMatrices[BoneIndex].M, sizeof(NewMatrix.M)) == 0)
-			continue;
-
-		SkinMatrices[BoneIndex] = NewMatrix;
-		NormalMatrices[BoneIndex] = SkinMatrices[BoneIndex].Inverse().GetTransposed();
-		if (!bNeedsFullSkinning)
+		const int32 EndBone = DirtyBoneEndIndices[FirstBone];
+		for (int32 BoneIndex = FirstBone; BoneIndex < EndBone; ++BoneIndex)
 		{
-			for (uint32 VertexIndex : BoneVertexIndices[BoneIndex])
+			SkinMatrices[BoneIndex] = SkeletalMeshData->RefBones[BoneIndex].InverseBindMatrix * ComponentSpaceTransforms[BoneIndex];
+			NormalMatrices[BoneIndex] = SkinMatrices[BoneIndex].Inverse().GetTransposed();
+			if (!bNeedsFullSkinning)
 			{
-				if (!DirtyVertexFlags[VertexIndex])
+				for (uint32 VertexIndex : BoneVertexIndices[BoneIndex])
 				{
-					DirtyVertexFlags[VertexIndex] = 1;
-					DirtyVertexIndices.Add(VertexIndex);
+					if (!DirtyVertexFlags[VertexIndex])
+					{
+						DirtyVertexFlags[VertexIndex] = 1;
+						DirtyVertexIndices.Add(VertexIndex);
+					}
 				}
 			}
 		}

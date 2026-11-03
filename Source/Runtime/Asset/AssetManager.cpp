@@ -219,6 +219,7 @@ void UAssetManager::Init(const FAssetLoadProgress& OnProgress)
 	Get().CreateDefaultMeshes();
 	Get().CreateParticleMaterial();
 	Get().CreateBillboardMaterial();
+	Get().CreateDecalMaterial();
 }
 
 void UAssetManager::ScanAssets(const fs::path& AssetRoot, const FAssetLoadProgress& OnProgress)
@@ -512,6 +513,19 @@ void UAssetManager::CreateBillboardMaterial()
 	BillboardMat->ParamLayout = EMaterialParamLayout::Billboard;
 	BillboardMat->ParamBuffer = RenderCommand::CreateConstantBuffer(sizeof(FBillboardMaterialParams));
 	RegisterAsset("BillboardMaterial", BillboardMat);
+}
+
+void UAssetManager::CreateDecalMaterial()
+{
+	UMaterial* DecalMaterial = NewObject<UMaterial>();
+	DecalMaterial->Shader = FRenderResourceManager::GetShaderProgram("Resources/Shader/DecalMesh.hlsl");
+	DecalMaterial->Textures.Add(LoadTexture(ResourcePaths::DefaultDecalTexture));
+	DecalMaterial->BlendState = EBlendState::AlphaBlend;
+	DecalMaterial->DepthStencilState = EDepthStencilState::ReadOnlyLessEqual;
+	DecalMaterial->SamplerState = ESamplerState::LinearClamp;
+	// 데칼마다 바뀌는 값(행렬·색·Fade)은 렌더러의 b6 상수 버퍼로 올리므로 머티리얼 파라미터 버퍼가 없다.
+	DecalMaterial->ParamLayout = EMaterialParamLayout::Decal;
+	RegisterAsset("DecalMaterial", DecalMaterial);
 }
 
 void UAssetManager::Shutdown()

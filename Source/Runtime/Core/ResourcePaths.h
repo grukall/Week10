@@ -13,10 +13,15 @@ namespace ResourcePaths
 
 	constexpr const char* DefaultSkyPanorama = "Resources/SkySphere/Sky.png";
 	constexpr const char* DefaultParticleTexture = "Resources/SubUV/StarParticle.png";
+	// 데칼 머티리얼 기본 텍스처. 가장자리 알파가 0이라 투영 박스 경계가 보이지 않는다.
+	constexpr const char* DefaultDecalTexture = "Resources/Decal/BulletHole.png";
 
 	// 라이트 빌보드 아이콘
 	constexpr const char* DirectionalLightIcon = "Resources/Icons/S_LightDirectional.png";
 	constexpr const char* PointLightIcon = "Resources/Icons/PointLight_64x.png";
 	constexpr const char* SpotLightIcon = "Resources/Icons/SpotLight_64x.png";
 	constexpr const char* SkyLightIcon = "Resources/Icons/SkyLight.png";
+
+	// 데칼 빌보드 아이콘
+	constexpr const char* DecalActorIcon = "Resources/Icons/DecalActor_64x.png";
 }

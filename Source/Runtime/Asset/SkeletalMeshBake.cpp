@@ -114,6 +114,7 @@ bool FSkeletalMeshBake::ReadBaked(std::istream& In, FSkeletalMeshData& OutData)
         FSkeletalMeshRefBone Bone;
         FString BoneName;
         if (!ReadString(In, BoneName) ||
+            !ReadString(In, Bone.SourceNodePath) ||
             !ReadPod(In, Bone.ParentIndex) ||
             !ReadPod(In, Bone.SubtreeEndIndex) ||
             !ReadMatrix(In, Bone.RefLocalMatrix) ||
@@ -157,6 +158,7 @@ bool FSkeletalMeshBake::WriteBaked(std::ostream& Out, const FSkeletalMeshData& D
     for (const FSkeletalMeshRefBone& Bone : Data.RefBones)
     {
         WriteString(Out, Bone.Name.ToString());
+        WriteString(Out, Bone.SourceNodePath);
         WritePod(Out, Bone.ParentIndex);
         WritePod(Out, Bone.SubtreeEndIndex);
         WriteMatrix(Out, Bone.RefLocalMatrix);

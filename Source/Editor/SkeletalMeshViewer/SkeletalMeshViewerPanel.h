@@ -60,9 +60,12 @@ private:
 	void BuildBoneHierarchy();
 	void DrawBoneNode(int32 BoneIndex);
 	void CreateDefaultSkeletalPreviewScene();
+
 	void FitCameraToMesh();
+
 	int32 PickBone(const FVector2& MousePosition, const FMatrix& ViewProjection, int32 ScreenWidth, int32 ScreenHeight) const;
 
+	void ExportReboundFbx();
 
 private:
 	USkeletalMesh* SkeletalMesh = nullptr;

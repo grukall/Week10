@@ -34,6 +34,7 @@
 #include "Component/SpotLightComponent.h"
 #include "Component/DirectionalLightComponent.h"
 #include "Component/ShapeComponent.h"
+#include "Component/DecalComponent.h"
 #include "Core/ResourcePaths.h"
 #include "Core/ProjectSettings.h"
 #include "Serialization/JsonArchive.h"
@@ -585,6 +586,7 @@ void UEditorEngine::RenderViewports()
     bPIEWindowRendered = false;
     const bool bRenderPIEWindow = IsPIEInWindow() && UpdatePIEWindowTargets();
     SceneRenderer.BeginFrame();
+    const FEngineShowFlags ShowFlags = MakeSceneRenderSettings().ShowFlags;
 
 	FViewport* SkeletalPreviewViewport = SkeletalMeshViewerPanel ? SkeletalMeshViewerPanel->GetSkeletalPreviewViewport() : nullptr;
 	FEditorViewportClient* SkeletalPreviewClient = SkeletalMeshViewerPanel ? SkeletalMeshViewerPanel->GetSkeletalPreviewClient() : nullptr;
@@ -598,19 +600,22 @@ void UEditorEngine::RenderViewports()
         FViewportClient* Client = Viewport.GetActiveClient();
         if (!Viewport.IsVisible() || !Client || !Client->HasCamera())
             continue;
-        const FSceneView View = Viewport.CreateSceneView();
+        FSceneView View = Viewport.CreateSceneView();
+        View.ShowFlags = ShowFlags;
         if (ViewSupportsShadows(View))
             SceneRenderer.AddShadowView(*Client->GetWorld(), View);
     }
     if (bRenderPIEWindow && PIEViewport->GetActiveClient()->HasCamera())
     {
-        const FSceneView View = PIEViewport->CreateSceneView();
+        FSceneView View = PIEViewport->CreateSceneView();
+        View.ShowFlags = ShowFlags;
         if (ViewSupportsShadows(View))
             SceneRenderer.AddShadowView(*PIEViewport->GetActiveClient()->GetWorld(), View);
     }
 	if (bRenderSkeletalPreview)
 	{
-		const FSceneView SkeletalPreview = SkeletalPreviewViewport->CreateSceneView();
+		FSceneView SkeletalPreview = SkeletalPreviewViewport->CreateSceneView();
+		SkeletalPreview.ShowFlags = ShowFlags;
 		if (ViewSupportsShadows(SkeletalPreview))
 		{
 			SceneRenderer.AddShadowView(*SkeletalPreviewViewport->GetActiveClient()->GetWorld(), SkeletalPreview);
@@ -626,7 +631,8 @@ void UEditorEngine::RenderViewports()
             continue;
         Viewport.EnsureRenderTargets();
         UWorld* ViewWorld = Client->GetWorld();
-        const FSceneView View = Viewport.CreateSceneView();
+        FSceneView View = Viewport.CreateSceneView();
+        View.ShowFlags = ShowFlags;
         FSceneRenderData& Data = Viewport.GetSceneRenderData();
         SceneRenderer.PrepareView(*ViewWorld, View, Data);
         // 파티클/빌보드 상수가 다음 수집으로 바뀌기 전에 이 화면을 소비한다.
@@ -637,7 +643,8 @@ void UEditorEngine::RenderViewports()
     {
         FViewportClient* Client = PIEViewport->GetActiveClient();
         PIEViewport->EnsureRenderTargets();
-        const FSceneView View = PIEViewport->CreateSceneView();
+        FSceneView View = PIEViewport->CreateSceneView();
+        View.ShowFlags = ShowFlags;
         FSceneRenderData& Data = PIEViewport->GetSceneRenderData();
         SceneRenderer.PrepareView(*Client->GetWorld(), View, Data);
         RenderFrame(*PIEViewport, *Client->GetWorld(), View, nullptr);
@@ -652,7 +659,8 @@ void UEditorEngine::RenderViewports()
 		SkeletalPreviewViewport->ClearSceneData();
 		SkeletalPreviewViewport->EnsureRenderTargets();
 
-		const FSceneView SkeletalPreviewView = SkeletalPreviewViewport->CreateSceneView();
+		FSceneView SkeletalPreviewView = SkeletalPreviewViewport->CreateSceneView();
+		SkeletalPreviewView.ShowFlags = ShowFlags;
 		FSceneRenderData& SkeletalPreviewData = SkeletalPreviewViewport->GetSceneRenderData();
 
 		SceneRenderer.PrepareView(*SkeletalPreviewWorld, SkeletalPreviewView, SkeletalPreviewData);
@@ -771,44 +779,51 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 	if ((bShowEditorOverlay || bShowSkeletalPreviewOverlay) && !Settings.bDepthView)
 	{
 		LineBatcher->BeginFrame();
-
-		if (bShowEditorOverlay)
+		if (Settings.bDrawBoundingBox)
 		{
-			if (Settings.bDrawBoundingBox)
+			LineBatcher->BuildVertexBuffer(ViewWorld);
+		}
+		for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
+		{
+			if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
 			{
-				LineBatcher->BuildVertexBuffer(ViewWorld);
-			}
-			for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
-			{
-				if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
-				{
-					DirLight->DrawDebug(LineBatcher.get());
-				}
-			}
-			for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
-			{
-				if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
-				{
-					SpotLight->DrawDebug(LineBatcher.get());
-				}
-			}
-			AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
-			for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
-			{
-				if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
-					continue;
-				if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
-					continue;
-				Shape->DrawDebug(LineBatcher.get());
+				DirLight->DrawDebug(LineBatcher.get());
 			}
 		}
+		for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+		{
+			if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
+			{
+				SpotLight->DrawDebug(LineBatcher.get());
+			}
+		}
+		AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
+		for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
+		{
+			if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
+				continue;
+			if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
+				continue;
+			Shape->DrawDebug(LineBatcher.get());
+		}
+
+		for (TObjectIterator<UDecalComponent> Decal; Decal; ++Decal)
+		{
+			if (!Decal || !Decal->GetOwner() || Decal->GetOwner()->GetWorld() != &ViewWorld)
+				continue;
+
+			Decal->DrawDebug(LineBatcher.get());
+		}
+
+
 
 		if (bShowSkeletalPreviewOverlay)
 		{
 			SkeletalMeshViewerPanel->DrawBoneDebug(*LineBatcher);
 		}
 
-		LineBatcher->OnRender(ViewProjection);
+		LineBatcher->OnRender(ViewProjection, 
+			bShowSkeletalPreviewOverlay ? EDepthStencilState::Disabled : EDepthStencilState::Default);
 	}
 
 
@@ -995,7 +1010,10 @@ FSceneRenderSettings UEditorEngine::MakeSceneRenderSettings() const
     FSceneRenderSettings Out;
     Out.bDrawPrimitives = Settings.bDrawPrimitives;
     Out.bVisualizeTileLightCount = Settings.bVisualizeTileLightCount;
+    Out.ShowFlags.SkeletalMeshes = Settings.bDrawSkeletalMeshes;
     Out.ShowFlags.Fog = Settings.bExponentialHeightFog;
+    Out.ShowFlags.Decal = Settings.bDecal;
+    Out.DecalMethod = Settings.bDecalMeshMethod ? EDecalMethod::Mesh : EDecalMethod::Depth;
     Out.ShowFlags.AntiAliasing = Settings.bEnableFXAA;
     Out.ShowFlags.Tonemapper = Settings.bToneMapping;
 	Out.ShowFlags.GammaCorrection = Settings.bGammaCorrection;
@@ -1010,7 +1028,8 @@ void UEditorEngine::RenderFrame(FViewport& Viewport, UWorld& ViewWorld, const FS
 {
 	const FRenderingInfo& ViewRenderingInfo = Viewport.GetRenderingInfo();
 	FRenderQueue& RenderQueue = Viewport.GetSceneRenderData().RenderQueue;
-	const FSceneRenderSettings SceneSettings = MakeSceneRenderSettings();
+	FSceneRenderSettings SceneSettings = MakeSceneRenderSettings();
+	SceneSettings.ShowFlags = View.ShowFlags;
 
 	// 그림자 자원은 World 컨텍스트별로 엔진이 할당해 파이프라인에 넘긴다.
     const bool bSupportsShadows = ViewSupportsShadows(View);

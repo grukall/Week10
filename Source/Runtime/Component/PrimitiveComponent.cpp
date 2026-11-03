@@ -99,7 +99,7 @@ bool UPrimitiveComponent::LineTraceComponent(const FRay& WorldRay, FHitResult& O
 void UPrimitiveComponent::PostEditChangeProperty(const FProperty& Property)
 {
 	Super::PostEditChangeProperty(Property);
-	if (Property.Name == "bVisible" || Property.Name == "bCastShadow" || Property.Name == "bReceiveShadow")
+	if (Property.Name == "bVisible" || Property.Name == "bCastShadow" || Property.Name == "bReceiveShadow" || Property.Name == "bRecieveDecal")
 		MarkRenderStateDirty();
 	if (Property.Name == "bGenerateOverlapEvents" || Property.Name == "bBlockComponent")
 		MarkOverlapsDirty();
