@@ -18,6 +18,7 @@ struct FEditorSettings
 	// 에디터 렌더 옵션과 편집 Quad 레이아웃의 영구 설정을 한곳에 담는다.
 	// Show: 화면에 무엇을 그릴지
 	bool bDrawPrimitives = true;
+	bool bDrawSkeletalMeshes = true;
 	bool bDrawBoundingBox = false;
 	bool bShowUUID = false;
 	bool bDrawGrid = true;

@@ -1,6 +1,7 @@
 #pragma once
 struct FEngineShowFlags
 {
+    bool SkeletalMeshes = true;
     bool Fog = true;
     bool AntiAliasing = true;       // FXAA
     bool Tonemapper = true;

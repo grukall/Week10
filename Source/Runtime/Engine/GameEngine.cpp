@@ -196,7 +196,8 @@ void UGameEngine::RenderViewports()
 
 	Viewport.EnsureRenderTargets();
 	UWorld* ViewWorld = Client->GetWorld();
-	const FSceneView View = Viewport.CreateSceneView();
+	FSceneView View = Viewport.CreateSceneView();
+	View.ShowFlags = RenderSettings.ShowFlags;
 	// 쉐도우 맵은 World의 첫 View를 그릴 때 준비되므로, 그 전에 그림자를 쓰는 View를 등록한다.
 	if (ScenePipeline.ViewSupportsShadows(View, RenderSettings))
 		SceneRenderer.AddShadowView(*ViewWorld, View);
