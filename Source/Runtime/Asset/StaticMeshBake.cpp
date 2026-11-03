@@ -1,6 +1,7 @@
 #include "EnginePCH.h"
 #include "StaticMeshBake.h"
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <type_traits>
@@ -211,4 +212,41 @@ bool FStaticMeshBake::WriteBaked(std::ostream& Out, const FStaticMeshData& Data)
 	WritePod<FBox>(Out, Data.AABB);
 
 	return static_cast<bool>(Out);
+}
+
+bool FStaticMeshBake::Validate(const FStaticMeshData& Data)
+{
+	FString Error;
+	if (!Data.Validate(Error))
+		return false;
+	uint32 ExpectedStart = 0;
+	for (const FStaticMeshSection& Section : Data.Sections)
+	{
+		if (Section.StartIndex != ExpectedStart || Section.IndexCount == 0 || Section.IndexCount % 3 != 0)
+			return false;
+
+		if (ExpectedStart > Data.Indices.size() || Section.IndexCount > Data.Indices.size() - ExpectedStart)
+			return false;
+
+		ExpectedStart += Section.IndexCount;
+	}
+
+	for (const FVertexPNCT& Vertex : Data.Vertices)
+	{
+		const float Values[] = { Vertex.Position.X, Vertex.Position.Y, Vertex.Position.Z,
+			Vertex.Normal.X, Vertex.Normal.Y, Vertex.Normal.Z, Vertex.Tangent.X, Vertex.Tangent.Y, Vertex.Tangent.Z,
+			Vertex.Tangent.W, Vertex.Color.X, Vertex.Color.Y, Vertex.Color.Z, Vertex.Color.W, Vertex.UV.X, Vertex.UV.Y };
+		for (float Value : Values)
+		{
+			if (!std::isfinite(Value))
+				return false;
+		}
+	}
+
+	for (int32 Axis = 0; Axis < 3; ++Axis)
+	{
+		if (!std::isfinite(Data.AABB.Min[Axis]) || !std::isfinite(Data.AABB.Max[Axis]) || Data.AABB.Min[Axis] > Data.AABB.Max[Axis])
+			return false;
+	}
+	return true;
 }

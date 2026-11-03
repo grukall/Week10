@@ -14,6 +14,7 @@ struct FFbxMeshData
     TArray<FSkeletalMeshData> SkeletalGroups;
 };
 
+// FBX 원본의 변경 여부와 캐시 파일을 관리하고 메시 종류별 Bake에 처리를 맡긴다.
 class FFbxMeshBake
 {
 public:

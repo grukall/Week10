@@ -1,7 +1,9 @@
 #include "EnginePCH.h"
 #include "FbxMeshBake.h"
 #include "SkeletalMeshBuilder.h"
-#include "Asset/ObjImporter/StaticMeshBake.h"
+#include "Asset/StaticMeshBake.h"
+#include "Asset/SkeletalMeshBake.h"
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <type_traits>
@@ -10,10 +12,6 @@ namespace
 {
     // CPU 데이터 형식 또는 FBX 변환 규칙(UV/좌표계 등)이 바뀌면 올린다.
     constexpr uint32 BakeVersion = 1;
-    constexpr uint32 MaxArrayElements = 16000000;
-    constexpr uint32 MaxStringLength = 4096;
-    constexpr uint32 MaxBoneCount = 65536;
-    constexpr uint32 MaxMaterialCount = 65536;
     constexpr uint32 MaxGroupCount = 1024;
 
     enum class EFbxMeshKind : uint32
@@ -34,74 +32,6 @@ namespace
     {
         static_assert(std::is_trivially_copyable_v<T>);
         return static_cast<bool>(In.read(reinterpret_cast<char*>(&Value), sizeof(T)));
-    }
-
-    template<typename T>
-    void WriteArray(std::ostream& Out, const TArray<T>& Values)
-    {
-        static_assert(std::is_trivially_copyable_v<T>);
-        WritePod(Out, static_cast<uint32>(Values.Num()));
-        Out.write(reinterpret_cast<const char*>(Values.GetData()), sizeof(T) * Values.size());
-    }
-
-    template<typename T>
-    bool ReadArray(std::istream& In, TArray<T>& Values)
-    {
-        static_assert(std::is_trivially_copyable_v<T>);
-        uint32 Count = 0;
-        if (!ReadPod(In, Count) || Count > MaxArrayElements)
-            return false;
-
-        // 잘못된 개수 때문에 파일 크기보다 큰 배열을 할당하지 않도록 한다.
-        const std::streampos DataStart = In.tellg();
-        In.seekg(0, std::ios::end);
-        const std::streampos FileEnd = In.tellg();
-        In.seekg(DataStart);
-
-        const std::streamoff RequiredBytes = static_cast<std::streamoff>(sizeof(T) * static_cast<uint64>(Count));
-        if (!In || FileEnd - DataStart < RequiredBytes)
-            return false;
-
-        Values.SetNum(static_cast<int32>(Count));
-        return static_cast<bool>(In.read(reinterpret_cast<char*>(Values.GetData()), sizeof(T) * Count));
-    }
-
-    void WriteString(std::ostream& Out, const FString& Value)
-    {
-        WritePod(Out, static_cast<uint32>(Value.size()));
-        Out.write(Value.data(), Value.size());
-    }
-
-    bool ReadString(std::istream& In, FString& Value)
-    {
-        uint32 Count = 0;
-        if (!ReadPod(In, Count) || Count > MaxStringLength)
-            return false;
-        Value.resize(Count);
-        return static_cast<bool>(In.read(Value.data(), Count));
-    }
-
-    // FMatrix는 단순 바이트 복사 타입이 아니므로 성분별로 저장한다.
-    void WriteMatrix(std::ostream& Out, const FMatrix& Matrix)
-    {
-        for (int32 Row = 0; Row < 4; ++Row)
-        {
-            for (int32 Column = 0; Column < 4; ++Column)
-                WritePod(Out, Matrix.M[Row][Column]);
-        }
-    }
-
-    bool ReadMatrix(std::istream& In, FMatrix& Matrix)
-    {
-        for (int32 Row = 0; Row < 4; ++Row)
-        {
-            for (int32 Column = 0; Column < 4; ++Column)
-            {
-                if (!ReadPod(In, Matrix.M[Row][Column]))
-                    return false;
-            }
-        }
-        return true;
     }
 
     bool ReadSourceFileInfo(const FString& Path, uint64& OutFileSize, int64& OutWriteTime)
@@ -158,122 +88,6 @@ namespace
         }
         return true;
     }
-
-    bool ValidateStatic(const FStaticMeshData& Data)
-    {
-        FString Error;
-        if (!Data.Validate(Error))
-            return false;
-        uint32 ExpectedStart = 0;
-        for (const FStaticMeshSection& Section : Data.Sections)
-        {
-            if (Section.StartIndex != ExpectedStart || Section.IndexCount == 0 || Section.IndexCount % 3 != 0)
-                return false;
-
-            if (ExpectedStart > Data.Indices.size() || Section.IndexCount > Data.Indices.size() - ExpectedStart)
-                return false;
-
-            ExpectedStart += Section.IndexCount;
-        }
-
-        for (const FVertexPNCT& Vertex : Data.Vertices)
-        {
-            const float Values[] = { Vertex.Position.X, Vertex.Position.Y, Vertex.Position.Z,
-                Vertex.Normal.X, Vertex.Normal.Y, Vertex.Normal.Z, Vertex.Tangent.X, Vertex.Tangent.Y, Vertex.Tangent.Z,
-                Vertex.Tangent.W, Vertex.Color.X, Vertex.Color.Y, Vertex.Color.Z, Vertex.Color.W, Vertex.UV.X, Vertex.UV.Y };
-            for (float Value : Values)
-            {
-                if (!std::isfinite(Value))
-                    return false;
-            }
-        }
-
-        for (int32 Axis = 0; Axis < 3; ++Axis)
-        {
-            if (!std::isfinite(Data.AABB.Min[Axis]) || !std::isfinite(Data.AABB.Max[Axis]) || Data.AABB.Min[Axis] > Data.AABB.Max[Axis])
-                return false;
-        }
-        return true;
-    }
-
-    void WriteSkeletal(std::ostream& Out, const FSkeletalMeshData& Data, const fs::path& ModelDirectory)
-    {
-        WriteArray(Out, Data.Vertices);
-        WriteArray(Out, Data.Indices);
-        WriteArray(Out, Data.Influences);
-        WriteArray(Out, Data.Sections);
-        WritePod(Out, Data.ReferenceBounds);
-
-        // FName의 실행 중 인덱스 대신 이름을 저장하고 로드할 때 다시 등록한다.
-        WritePod(Out, static_cast<uint32>(Data.RefBones.Num()));
-        for (const FSkeletalMeshRefBone& Bone : Data.RefBones)
-        {
-            WriteString(Out, Bone.Name.ToString());
-            WritePod(Out, Bone.ParentIndex);
-            WritePod(Out, Bone.SubtreeEndIndex);
-            WriteMatrix(Out, Bone.RefLocalMatrix);
-            WriteMatrix(Out, Bone.InverseBindMatrix);
-        }
-
-        WritePod(Out, static_cast<uint32>(Data.MaterialSlots.Num()));
-        for (const FSkeletalMaterialSlot& Material : Data.MaterialSlots)
-        {
-            WriteString(Out, Material.Name);
-            WritePod(Out, Material.BaseColor);
-            WritePod(Out, Material.SpecularColor);
-            WritePod(Out, Material.Shininess);
-            WriteString(Out, MakeRelativeTexturePath(Material.DiffuseTexturePath, ModelDirectory));
-            WriteString(Out, MakeRelativeTexturePath(Material.NormalTexturePath, ModelDirectory));
-        }
-    }
-
-    bool ReadSkeletal(std::istream& In, FSkeletalMeshData& Data, const fs::path& ModelDirectory)
-    {
-        if (!ReadArray(In, Data.Vertices) ||
-            !ReadArray(In, Data.Indices) ||
-            !ReadArray(In, Data.Influences) ||
-            !ReadArray(In, Data.Sections) ||
-            !ReadPod(In, Data.ReferenceBounds))
-            return false;
-
-        uint32 BoneCount = 0;
-        if (!ReadPod(In, BoneCount) || BoneCount > MaxBoneCount)
-            return false;
-
-        for (uint32 BoneIndex = 0; BoneIndex < BoneCount; ++BoneIndex)
-        {
-            FSkeletalMeshRefBone Bone;
-            FString BoneName;
-            if (!ReadString(In, BoneName) ||
-                !ReadPod(In, Bone.ParentIndex) ||
-                !ReadPod(In, Bone.SubtreeEndIndex) ||
-                !ReadMatrix(In, Bone.RefLocalMatrix) ||
-                !ReadMatrix(In, Bone.InverseBindMatrix))
-                return false;
-
-            Bone.Name = FName(BoneName);
-            Data.RefBones.Add(std::move(Bone));
-        }
-
-        uint32 MaterialCount = 0;
-        if (!ReadPod(In, MaterialCount) || MaterialCount > MaxMaterialCount)
-            return false;
-
-        for (uint32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
-        {
-            FSkeletalMaterialSlot Material;
-            if (!ReadString(In, Material.Name) ||
-                !ReadPod(In, Material.BaseColor) ||
-                !ReadPod(In, Material.SpecularColor) ||
-                !ReadPod(In, Material.Shininess) ||
-                !ReadString(In, Material.DiffuseTexturePath) ||
-                !ReadString(In, Material.NormalTexturePath))
-                return false;
-
-            Data.MaterialSlots.Add(std::move(Material));
-        }
-        return FSkeletalMeshBuilder::Validate(Data) && RestoreMaterialPaths(Data.MaterialSlots, ModelDirectory);
-    }
 }
 
 bool FFbxMeshBake::ReadBaked(const FString& FbxPath, FFbxMeshData& OutData)
@@ -307,7 +121,7 @@ bool FFbxMeshBake::ReadBaked(const FString& FbxPath, FFbxMeshData& OutData)
     if (Kind == EFbxMeshKind::Static)
     {
         Result.StaticMesh = FStaticMeshBake::ReadBaked(In);
-        if (!Result.StaticMesh || !ValidateStatic(*Result.StaticMesh))
+        if (!Result.StaticMesh || !FStaticMeshBake::Validate(*Result.StaticMesh))
             return false;
         if (!RestoreMaterialPaths(Result.StaticMesh->MaterialSlots, ModelDirectory))
             return false;
@@ -321,7 +135,9 @@ bool FFbxMeshBake::ReadBaked(const FString& FbxPath, FFbxMeshData& OutData)
         for (uint32 GroupIndex = 0; GroupIndex < GroupCount; ++GroupIndex)
         {
             FSkeletalMeshData GroupData;
-            if (!ReadSkeletal(In, GroupData, ModelDirectory))
+            if (!FSkeletalMeshBake::ReadBaked(In, GroupData) ||
+                !FSkeletalMeshBuilder::Validate(GroupData) ||
+                !RestoreMaterialPaths(GroupData.MaterialSlots, ModelDirectory))
                 return false;
             Result.SkeletalGroups.Add(std::move(GroupData));
         }
@@ -344,7 +160,7 @@ bool FFbxMeshBake::WriteBaked(const FString& FbxPath, const FFbxMeshData& Data)
     const bool bStatic = Data.StaticMesh != nullptr;
     if (bStatic)
     {
-        if (!Data.SkeletalGroups.IsEmpty() || !ValidateStatic(*Data.StaticMesh))
+        if (!Data.SkeletalGroups.IsEmpty() || !FStaticMeshBake::Validate(*Data.StaticMesh))
             return false;
     }
     else if (Data.SkeletalGroups.IsEmpty())
@@ -394,7 +210,15 @@ bool FFbxMeshBake::WriteBaked(const FString& FbxPath, const FFbxMeshData& Data)
     {
         WritePod(Out, static_cast<uint32>(Data.SkeletalGroups.Num()));
         for (const FSkeletalMeshData& Group : Data.SkeletalGroups)
-            WriteSkeletal(Out, Group, ModelDirectory);
+        {
+            FSkeletalMeshData RelativeGroupData = Group;
+            for (FSkeletalMaterialSlot& Material : RelativeGroupData.MaterialSlots)
+            {
+                Material.DiffuseTexturePath = MakeRelativeTexturePath(Material.DiffuseTexturePath, ModelDirectory);
+                Material.NormalTexturePath = MakeRelativeTexturePath(Material.NormalTexturePath, ModelDirectory);
+            }
+            FSkeletalMeshBake::WriteBaked(Out, RelativeGroupData);
+        }
     }
 
     Out.flush();

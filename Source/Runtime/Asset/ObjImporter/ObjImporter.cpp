@@ -11,7 +11,7 @@
 #include "Render/Vertex.h"
 #include "Containers/Map.h"
 #include "Containers/StringView.h"
-#include "Asset/ObjImporter/StaticMeshBake.h"
+#include "Asset/StaticMeshBake.h"
 
 #include <algorithm>
 
