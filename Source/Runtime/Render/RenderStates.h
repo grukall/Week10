@@ -16,5 +16,5 @@ enum class EDepthStencilState : uint8
 // 스텐실 8비트 중 데칼 수신 여부에 쓰는 비트. 선택 아웃라인은 나머지 하위 비트만 쓴다(UE의 RECEIVE_DECAL 비트와 같은 방식).
 constexpr uint8 DecalStencilBit = 0x80;
 constexpr uint8 OutlineStencilMask = static_cast<uint8>(~DecalStencilBit);
-enum class EBlendState : uint8 { Opaque, AlphaBlend, NoColorWrite, Count };
+enum class EBlendState : uint8 { Opaque, AlphaBlend, NoColorWrite, Emissive, Count };
 enum class ESamplerState : uint8 { LinearClamp, LinearWrap, PointClamp, ShadowComparison, Count };

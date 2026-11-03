@@ -9,6 +9,7 @@
 #include "Component/BoxComponent.h"
 #include "Component/SphereComponent.h"
 #include "Component/CapsuleComponent.h"
+#include "Component/DecalComponent.h"
 #include <d3dcompiler.h>
 #include "imgui_internal.h"
 #include "Editor/HitoriEd/EditorDragDrop.h"
@@ -805,6 +806,17 @@ namespace
 				// ULightComponent::ShadowFilterMode와 셰이더 SHADOW_FILTER_*의 순서와 같다.
 				const char* Items[] = { "PCF 2x2 (Hardware)", "PCF 3x3 (Point)", "PCF 5x5 (Point)", "PCF 5x5 (Comparison)", "PCSS" };
 				int Selected = static_cast<int>(Cast<ULightComponent>(Object)->GetShadowFilterMode());
+				if (ImGui::Combo(Label.c_str(), &Selected, Items, IM_ARRAYSIZE(Items)))
+				{
+					*static_cast<int*>(ValuePtr) = Selected;
+					bChanged = true;
+				}
+			}
+			else if (Property.Name == "BlendType" && Cast<UDecalComponent>(Object))
+			{
+				// EDecalBlendType 순서와 같다.
+				const char* Items[] = { "Albedo", "Emissive" };
+				int Selected = static_cast<int>(Cast<UDecalComponent>(Object)->GetBlendType());
 				if (ImGui::Combo(Label.c_str(), &Selected, Items, IM_ARRAYSIZE(Items)))
 				{
 					*static_cast<int*>(ValuePtr) = Selected;

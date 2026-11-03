@@ -60,7 +60,7 @@ public:
 	//지금까진 EditorEngine에서 모든 Renderer가있어서 둘다 공통으로 진행되는 파이프라인을 FSceneRenderPipeline에 모아서 실행
 private:
 	void RenderOpaquePass(FViewport& Viewport, const FRenderingInfo& ViewRenderingInfo, const FSceneView& View, const FDirectionalLightInfo& DirectionalLight, const FSceneRenderSettings& Settings,
-		const TArray<FDeferredDecalSceneProxy*>& Decals);
+		const TArray<FDeferredDecalSceneProxy*>& AlbedoDecals, const TArray<FDeferredDecalSceneProxy*>& EmissiveDecals);
 	void RenderFogPass(UWorld& ViewWorld, const FRenderingInfo& ViewRenderingInfo, const FVector& ViewCameraLocation, const FMatrix& ViewProjection);
 	void RenderGammaEncodePass(const FRenderingInfo& SceneRenderingInfo, const FRenderingInfo& ViewRenderingInfo, const FGammaEncodeParams& Params);
 	void RenderFXAAPass(FTexture2D* FxaaTarget, const FRenderingInfo& ViewRenderingInfo);

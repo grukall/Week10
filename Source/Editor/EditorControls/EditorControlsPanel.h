@@ -13,6 +13,7 @@
 #include "GameFramework/Actor/SpotLightActor.h"
 #include "GameFramework/Actor/CollisionTestActor.h"
 #include "GameFramework/Actor/DecalActor.h"
+#include "GameFramework/Actor/FakeSpotLightActor.h"
 #include "LevelSequence/LevelSequenceActor.h"
 
 class FViewportsPanel;
@@ -61,6 +62,7 @@ public:
 		ACollisionTestActor::StaticClass(),
 		ALevelSequenceActor::StaticClass(),
 		ADecalActor::StaticClass(),
+		AFakeSpotLightActor::StaticClass(),
 	};
 
     void SetViewportsPanel(FViewportsPanel* InPanel) { ViewportsPanel = InPanel; }

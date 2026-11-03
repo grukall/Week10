@@ -34,6 +34,7 @@ void FDeferredDecalSceneProxy::UpdateFromComponent()
 
 	DecalColor = Component->DecalColor;
 	FadeScreenSize = Component->FadeScreenSize;
+	BlendType = Component->GetBlendType();
 
 	//TODO : bVisible?
 	bVisible = true;

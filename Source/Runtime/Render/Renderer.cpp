@@ -283,11 +283,11 @@ void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& D
 	}
 	RenderCommand::BeginRenderPass(PassInfo);
 	// 데칼이 겹치면 A가 Src + Dst·(1-SrcA)로 쌓여 "얼마나 덮였나"가 된다.
-	DrawDecals(Decals, View, SceneInfo.ViewportSetting, SceneDepth, Method);
+	DrawDecals(Decals, View, SceneInfo.ViewportSetting, SceneDepth, Method, EBlendState::AlphaBlend);
 	RenderCommand::EndRenderPass(PassInfo);
 }
 
-void FRenderer::RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, EDecalMethod Method)
+void FRenderer::RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, EDecalMethod Method, EBlendState BlendState)
 {
 	FTexture2D* SceneDepth = SceneInfo.DepthStencil.Texture;
 	if (Decals.Num() == 0 || !SceneDepth || !SceneDepth->GetReadOnlyDSV())
@@ -305,22 +305,17 @@ void FRenderer::RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, con
 
 	RenderCommand::EndRenderPass(SceneInfo);
 	RenderCommand::BeginRenderPass(DecalInfo);
-	DrawDecals(Decals, View, SceneInfo.ViewportSetting, SceneDepth, Method);
+	DrawDecals(Decals, View, SceneInfo.ViewportSetting, SceneDepth, Method, BlendState);
 	RenderCommand::EndRenderPass(DecalInfo);
 
 	// 반투명은 원래의 쓰기 가능한 DSV로 이어 그린다. 블렌드·깊이 상태는 반투명 머티리얼이 다시 설정한다.
 	RenderCommand::BeginRenderPass(ResumeInfo);
 }
 
-void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method)
+void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method, EBlendState BlendState)
 {
 	// stat decal 그리기 수치는 뷰마다 새로 센다
-	FDecalStats& Stats = FDecalStats::Get();
-	Stats.bMeshMethod = Method == EDecalMethod::Mesh;
-	Stats.TotalDecals = static_cast<uint32>(Decals.Num());
-	Stats.DrawnDecals = 0;
-	Stats.DrawnTriangles = 0;
-
+	// stat decal 수치는 BeginDecalStats가 뷰마다 되돌리고, 여기서는 패스마다 더한다
 	if (Decals.Num() == 0)
 		return;
 
@@ -330,7 +325,7 @@ void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, cons
 	Constants.ViewportWidth = static_cast<float>(Viewport.Width);
 	Constants.ViewportHeight = static_cast<float>(Viewport.Height);
 
-	RenderCommand::SetBlendState(EBlendState::AlphaBlend);
+	RenderCommand::SetBlendState(BlendState);
 	RenderCommand::SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	RenderCommand::BindConstantBuffer(DecalCBSlot, DecalCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
 
@@ -343,8 +338,8 @@ void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, cons
 	else
 		DrawDecalReceivers(Decals, View, Constants);
 
-	const double CpuMs = FPlatformTime::ToMilliseconds64(FPlatformTime::GetCycles64() - StartCycles);
-	Stats.DrawCpuMs += (CpuMs - Stats.DrawCpuMs) * 0.1;
+	DecalViewCpuMs += FPlatformTime::ToMilliseconds64(FPlatformTime::GetCycles64() - StartCycles);
+	bDecalViewDrew = true;
 	EndDecalGPUQuery(GPUQuery);
 
 	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
@@ -352,36 +347,78 @@ void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, cons
 	RenderCommand::UnbindShaderResource(DecalSceneDepthSlot, EShaderBindFlagBits::Pixel);
 }
 
+void FRenderer::BeginDecalStats(EDecalMethod Method, uint32 TotalDecals)
+{
+	FDecalStats& Stats = FDecalStats::Get();
+
+	// 지난 뷰의 패스들을 합친 CPU 시간을 평균에 넣는다. 그린 데칼이 없던 뷰는 평균을 흔들지 않게 건너뛴다.
+	if (bDecalViewDrew)
+		Stats.DrawCpuMs += (DecalViewCpuMs - Stats.DrawCpuMs) * 0.1;
+	DecalViewCpuMs = 0.0;
+	bDecalViewDrew = false;
+	++DecalStatsView;
+
+	Stats.bMeshMethod = Method == EDecalMethod::Mesh;
+	Stats.TotalDecals = TotalDecals;
+	Stats.DrawnDecals = 0;
+	Stats.DrawnTriangles = 0;
+}
+
+void FRenderer::FlushDecalGPUSum()
+{
+	if (!bDecalGPUSumStarted)
+		return;
+
+	FDecalStats& Stats = FDecalStats::Get();
+	Stats.PixelsShaded = DecalGPUSumPixels;
+	// 측정 중 GPU 클럭이 바뀌었으면 시간은 믿을 수 없어 버린다
+	if (bDecalGPUSumValid)
+		Stats.DrawGpuMs += (DecalGPUSumMs - Stats.DrawGpuMs) * 0.1;
+	bDecalGPUSumStarted = false;
+}
+
 void FRenderer::ReadDecalGPUQueries()
 {
 	ID3D11DeviceContext* Context = RenderCommand::GetContext();
-	FDecalStats& Stats = FDecalStats::Get();
 
-	for (FDecalGPUQuery& Query : DecalGPUQueries)
+	// 같은 뷰의 패스를 더하려면 낸 순서대로 읽어야 한다. 다음에 쓸 슬롯이 가장 오래된 측정이다.
+	for (uint32 Offset = 0; Offset < DecalGPUQueryCount; ++Offset)
 	{
+		FDecalGPUQuery& Query = DecalGPUQueries[(NextDecalGPUQuery + Offset) % DecalGPUQueryCount];
 		if (!Query.bPending)
 			continue;
 
-		// 기다리지 않는다. 아직 GPU가 안 끝났으면 다음에 다시 본다
+		// 기다리지 않는다. 아직 GPU가 안 끝났으면 뒤의 측정도 안 끝났으니 다음에 다시 본다
 		D3D11_QUERY_DATA_TIMESTAMP_DISJOINT Disjoint{};
 		if (Context->GetData(Query.Disjoint.Get(), &Disjoint, sizeof(Disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
-			continue;
+			break;
 
 		UINT64 BeginTime = 0, EndTime = 0;
 		D3D11_QUERY_DATA_PIPELINE_STATISTICS Pipeline{};
 		if (Context->GetData(Query.Begin.Get(), &BeginTime, sizeof(BeginTime), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
 			Context->GetData(Query.End.Get(), &EndTime, sizeof(EndTime), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
 			Context->GetData(Query.Pipeline.Get(), &Pipeline, sizeof(Pipeline), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
-			continue;
+			break;
 
 		Query.bPending = false;
-		Stats.PixelsShaded = Pipeline.PSInvocations;
 
-		// 측정 중 GPU 클럭이 바뀌었으면 시간은 믿을 수 없어 버린다
+		// 다른 뷰의 측정이 나왔으면 앞 뷰의 합은 다 모였다
+		if (bDecalGPUSumStarted && Query.StatsView != DecalGPUSumView)
+			FlushDecalGPUSum();
+		if (!bDecalGPUSumStarted)
+		{
+			bDecalGPUSumStarted = true;
+			bDecalGPUSumValid = true;
+			DecalGPUSumView = Query.StatsView;
+			DecalGPUSumMs = 0.0;
+			DecalGPUSumPixels = 0;
+		}
+
+		DecalGPUSumPixels += Pipeline.PSInvocations;
 		if (Disjoint.Disjoint || Disjoint.Frequency == 0 || EndTime < BeginTime)
-			continue;
-		const double GpuMs = static_cast<double>(EndTime - BeginTime) * 1000.0 / static_cast<double>(Disjoint.Frequency);
-		Stats.DrawGpuMs += (GpuMs - Stats.DrawGpuMs) * 0.1;
+			bDecalGPUSumValid = false;
+		else
+			DecalGPUSumMs += static_cast<double>(EndTime - BeginTime) * 1000.0 / static_cast<double>(Disjoint.Frequency);
 	}
 }
 
@@ -413,6 +450,7 @@ FRenderer::FDecalGPUQuery* FRenderer::BeginDecalGPUQuery()
 	Context->Begin(Query.Disjoint.Get());
 	Context->End(Query.Begin.Get());	// 타임스탬프는 End만 호출한다
 	Context->Begin(Query.Pipeline.Get());
+	Query.StatsView = DecalStatsView;
 	return &Query;
 }
 

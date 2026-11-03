@@ -140,9 +140,13 @@ public:
 	// 큐를 정렬해 불투명 패킷만 그린다. 반투명은 RenderTranslucent 호출 전까지 보관한다.
 	void RenderOpaque(const FMatrix& ViewProjection, bool bAfterPrepass = false);
 
-	// Unlit 전용. 불투명과 반투명 사이에 호출해 데칼을 씬 컬러에 바로 덧그린다. 조명이 없어 DBuffer를 거친 결과와 같다.
+	// 불투명과 반투명 사이에 호출해 데칼을 씬 컬러에 바로 덧그린다.
+	// Unlit의 Albedo 데칼은 AlphaBlend로 그리며, 조명이 없어 DBuffer를 거친 결과와 같다.
+	// Emissive 데칼은 Lit/Unlit 모두 조명이 끝난 뒤 Emissive(가산)로 그려 빛을 더한다.
 	// SceneInfo는 진행 중인 씬 패스이며, 깊이를 읽기 전용 DSV로 바꿔 그린 뒤 원래 바인딩으로 이어 준다.
-	void RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, EDecalMethod Method);
+	void RenderDecal(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, EDecalMethod Method, EBlendState BlendState);
+	// stat decal 그리기 수치를 뷰 시작에 한 번 되돌린다. 한 뷰에서 Albedo와 Emissive 패스가 따로 그려도 합쳐서 센다.
+	void BeginDecalStats(EDecalMethod Method, uint32 TotalDecals);
 	void RenderDepthPrepass(const FMatrix& ViewProjection);
 
 	// Pass 1: 한 면을 Clear하고 그린다.
@@ -224,7 +228,7 @@ private:
 	void BindMaterial(UMaterial* material, ESceneMeshPass Pass = ESceneMeshPass::Color);
 	void UpdateMaterialParams(const FRenderPacket& RenderPacket);
 	// 데칼 공통 상수를 채우고 방식에 맞게 그린다. 렌더 타깃과 읽기 전용 깊이는 호출자가 바인딩해 둔다.
-	void DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method);
+	void DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method, EBlendState BlendState);
 	void DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants, FTexture2D* SceneDepth);
 	void DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants);
 
@@ -235,11 +239,23 @@ private:
 		ComPtr<ID3D11Query> Begin;
 		ComPtr<ID3D11Query> End;
 		ComPtr<ID3D11Query> Pipeline;	// 픽셀 셰이더 실행 수
+		uint32 StatsView = 0;			// 어느 뷰의 측정인지. 같은 뷰의 패스끼리 더한다
 		bool bPending = false;
 	};
 	static constexpr uint32 DecalGPUQueryCount = 8;
 	std::array<FDecalGPUQuery, DecalGPUQueryCount> DecalGPUQueries;
 	uint32 NextDecalGPUQuery = 0;
+	// BeginDecalStats마다 1씩 는다. 패스별 측정을 뷰 단위로 묶는 번호다
+	uint32 DecalStatsView = 0;
+	double DecalViewCpuMs = 0.0;		// 이번 뷰에서 지금까지 그린 패스들의 CPU 시간 합
+	bool bDecalViewDrew = false;
+	// GPU 결과는 몇 프레임 늦게 오므로 같은 뷰의 결과가 다 모일 때까지 따로 더해 둔다
+	uint32 DecalGPUSumView = 0;
+	double DecalGPUSumMs = 0.0;
+	uint64 DecalGPUSumPixels = 0;
+	bool bDecalGPUSumValid = false;		// 시간을 믿을 수 있는지. 하나라도 클럭이 바뀌었으면 false
+	bool bDecalGPUSumStarted = false;
+	void FlushDecalGPUSum();
 	// 끝난 측정을 FDecalStats에 옮긴다
 	void ReadDecalGPUQueries();
 	// 쓸 슬롯이 아직 GPU에서 안 끝났으면 이번 측정은 건너뛰고 nullptr를 돌려준다

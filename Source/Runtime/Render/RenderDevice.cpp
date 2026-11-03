@@ -295,6 +295,17 @@ void FRenderDevice::CreateStates()
 		Desc.RenderTarget[0].BlendEnable = FALSE;
 		Desc.RenderTarget[0].RenderTargetWriteMask = 0;
 		Device->CreateBlendState(&Desc, BlendStates[(uint8)EBlendState::NoColorWrite].GetAddressOf());
+
+		// 빛을 더한다. 색은 Src × SrcA + Dst로 원래 색을 줄이지 않고, 알파는 원래 값을 유지한다.
+		// 바로 위 NoColorWrite가 쓰기 마스크를 0으로 바꿔 두었으므로 다시 켠다.
+		Desc.RenderTarget[0].BlendEnable = TRUE;
+		Desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+		Desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+		Desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+		Desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+		Desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+		Desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+		Device->CreateBlendState(&Desc, BlendStates[(uint8)EBlendState::Emissive].GetAddressOf());
 	}
 
 	// ---------- Sampler ----------

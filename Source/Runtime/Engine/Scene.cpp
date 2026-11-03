@@ -238,6 +238,18 @@ void FScene::AddDecal(UDecalComponent* Component)
 
 	Proxy->UpdateFromComponent();
 	Decals.Add(Proxy);
+	PlaceDecalByBlendType(Proxy);
+}
+
+void FScene::PlaceDecalByBlendType(FDeferredDecalSceneProxy* Proxy)
+{
+	const bool bEmissive = Proxy->BlendType == EDecalBlendType::Emissive;
+	TArray<FDeferredDecalSceneProxy*>& Target = bEmissive ? EmissiveDecals : AlbedoDecals;
+	TArray<FDeferredDecalSceneProxy*>& Other = bEmissive ? AlbedoDecals : EmissiveDecals;
+
+	const int32 OtherIndex = Other.Find(Proxy);
+	if (OtherIndex != INDEX_NONE) Other.RemoveAt(OtherIndex);
+	if (Target.Find(Proxy) == INDEX_NONE) Target.Add(Proxy);
 }
 
 void FScene::RemoveDecal(UDecalComponent *Component)
@@ -249,6 +261,9 @@ void FScene::RemoveDecal(UDecalComponent *Component)
 	const int32 Index = Decals.Find(Proxy);
 
 	if (Index != INDEX_NONE) Decals.RemoveAt(Index);
+	TArray<FDeferredDecalSceneProxy*>& DrawList = Proxy->BlendType == EDecalBlendType::Emissive ? EmissiveDecals : AlbedoDecals;
+	const int32 DrawIndex = DrawList.Find(Proxy);
+	if (DrawIndex != INDEX_NONE) DrawList.RemoveAt(DrawIndex);
 	if (Proxy->bQueuedForUpdate)
 	{
 		const int32 Found = DirtyDecals.Find(Proxy);
@@ -268,6 +283,8 @@ void FScene::RemoveAllDecals()
 	}
 
 	Decals.Reset();
+	AlbedoDecals.Reset();
+	EmissiveDecals.Reset();
 	DirtyDecals.Reset();
 }
 
@@ -322,6 +339,8 @@ void FScene::UpdateAllTransforms()
 	for (FDeferredDecalSceneProxy* Proxy : DirtyDecals)
 	{
 		Proxy->UpdateFromComponent();
+		// 에디터에서 BlendType을 바꿨으면 그리기 목록을 옮긴다
+		PlaceDecalByBlendType(Proxy);
 		Proxy->bQueuedForUpdate = false;
 	}
 	DirtyDecals.Reset();

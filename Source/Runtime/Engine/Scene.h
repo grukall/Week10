@@ -45,6 +45,8 @@ public:
 	void RemoveDecal(class UDecalComponent* Component);
 	void RemoveAllDecals();
 	void MarkDecalDirty(struct FDeferredDecalSceneProxy* Proxy);
+	// 프록시의 BlendType에 맞는 그리기 목록으로 옮긴다. 이미 맞는 목록에 있으면 그대로 둔다.
+	void PlaceDecalByBlendType(struct FDeferredDecalSceneProxy* Proxy);
 	//===================
 
 	void UpdateAllTransforms();
@@ -75,7 +77,11 @@ public:
 	// 프록시에 담긴 라이트 색이 어느 작업 흐름으로 계산됐는지. ColorWorkflow::bLinear와 다르면 전부 다시 계산한다.
 	bool bLightColorsLinear = true;
 
+	// 전체 목록. Mesh 방식 빌드와 무효화는 그리는 방식과 상관없이 모든 데칼을 본다.
 	TArray<FDeferredDecalSceneProxy*> Decals;
+	// 그리기 목록. Albedo는 조명 전 DBuffer에, Emissive는 조명 뒤 씬 컬러에 더해 그린다.
+	TArray<FDeferredDecalSceneProxy*> AlbedoDecals;
+	TArray<FDeferredDecalSceneProxy*> EmissiveDecals;
 	TArray<FDeferredDecalSceneProxy*> DirtyDecals;
 
 	// 컬링 결과로 프록시를 바로 내보내 컴포넌트를 역참조하지 않는다. 경계는 Build/Refit 때만 계산한다.

@@ -8,6 +8,13 @@
 class FLineBatcher;
 class UMaterial;
 
+// BlendType에 저장하는 값. 에디터 콤보 순서와 같다.
+enum class EDecalBlendType : uint32
+{
+	Albedo,
+	Emissive,
+};
+
 class UDecalComponent : public USceneComponent
 {
 	DECLARE_CLASS(UDecalComponent, USceneComponent)
@@ -21,6 +28,7 @@ class UDecalComponent : public USceneComponent
 		PROPERTY(FadeInStartDelay)
 		PROPERTY(bDestroyOwnerAfterFade)
 		PROPERTY(DecalMaterial)
+		PROPERTY(BlendType)
 		FUNCTION(GetFadeStartDelay)
 		FUNCTION(GetFadeDuration)
 		FUNCTION(GetFadeInStartDelay)
@@ -72,6 +80,14 @@ public:
 
 	//완전히 사라지면(alpha = 0) 액터를 삭제할지
 	bool bDestroyOwnerAfterFade = false;
+
+
+	// Decal을 어떻게 그릴지
+	// Albedo : 조명 전에 표면 Albedo를 Decal 색으로 바꾼다. 조명을 받는다. (기본)
+	// Emissive : 조명이 끝난 씬 컬러에 Decal 색을 더한다. 어두운 곳에서도 보여 페이크 라이트로 쓴다.
+	// 리플렉션이 enum을 몰라 정수로 저장한다. 값은 EDecalBlendType 순서다.
+	uint32 BlendType = 0;
+	EDecalBlendType GetBlendType() const { return BlendType == static_cast<uint32>(EDecalBlendType::Emissive) ? EDecalBlendType::Emissive : EDecalBlendType::Albedo; }
 
 	float GetFadeStartDelay() const { return FadeStartDelay; }
 	float GetFadeDuration() const { return FadeDuration; }
