@@ -37,6 +37,8 @@ static_assert(offsetof(FShadowDepthPassConstants, InvRadius) == 76);
 constexpr uint32 ObjectSlotBytes = 256;
 // UberLit이 데칼 결과를 읽는 슬롯. 그림자 SRV(t12~t15) 다음 칸이다.
 constexpr uint32 DBufferSRVSlot = 16;
+// 데칼 노멀(DBufferB)을 읽는 슬롯
+constexpr uint32 DBufferNormalSRVSlot = 17;
 
 struct FPerObjectConstants
 {
@@ -67,7 +69,8 @@ struct FDecalConstants
 	float ViewportWidth = 0.0f;
 	float ViewportHeight = 0.0f;
 	float FadeAlpha = 1.0f;
-	float Padding = 0.0f;
+	// 0: 노멀맵 없음, 1: 노멀맵 있음, 2: 노멀맵 있고 G 채널을 뒤집는다(bFlipNormalGreen)
+	float NormalMode = 0.0f;
 };
 static_assert(sizeof(FDecalConstants) == 288, "HLSL b6 FDecalConstants(DecalCommon.hlsli)와 같아야 한다");
 
@@ -131,11 +134,11 @@ public:
 	// SceneView의 ViewProjection을 직접 받아 View별 렌더 큐를 그린다.
 	void RenderAll(FRenderQueue& InQueue, const FMatrix& ViewProjection, const FVector& CameraPosition);
 
-	// Lit 전용. Depth Prepass 뒤, 불투명 셰이딩 전에 호출해 데칼 색을 DBuffer에 쌓는다.
-	// UberLit이 DBuffer를 읽어 Albedo에 섞은 뒤 조명을 계산하므로 데칼도 빛과 그림자를 받는다.
+	// Lit 전용. Depth Prepass 뒤, 불투명 셰이딩 전에 호출해 데칼 색은 DBuffer에, 노멀은 DBufferNormal에 쌓는다.
+	// UberLit이 둘을 읽어 Albedo와 노멀에 섞은 뒤 조명을 계산하므로 데칼도 빛과 그림자를 받고 요철이 생긴다.
 	// 데칼이 없어도 DBuffer를 지우므로 매 Lit View마다 호출한다.
 	void RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View,
-		const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, EDecalMethod Method);
+		const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, FTexture2D* DBufferNormal, EDecalMethod Method);
 
 	// 큐를 정렬해 불투명 패킷만 그린다. 반투명은 RenderTranslucent 호출 전까지 보관한다.
 	void RenderOpaque(const FMatrix& ViewProjection, bool bAfterPrepass = false);
@@ -261,7 +264,7 @@ private:
 	// 쓸 슬롯이 아직 GPU에서 안 끝났으면 이번 측정은 건너뛰고 nullptr를 돌려준다
 	FDecalGPUQuery* BeginDecalGPUQuery();
 	void EndDecalGPUQuery(FDecalGPUQuery* Query);
-	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 숨겼거나 Fade로 다 사라져 그릴 것이 없으면 false
+	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 숨겼거나, 화면 밖이거나, Fade로 다 사라져 그릴 것이 없으면 false
 	bool BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, FDecalConstants& Constants, const FMatrix& BoxToWorld);
 	void UpdatePerObjectConstants(const FRenderPacket& RenderPacket, const FMatrix& ViewProjection);
 	void EnsurePerObjectSlotCapacity(uint32 SlotCount);

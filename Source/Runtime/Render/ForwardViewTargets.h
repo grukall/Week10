@@ -8,6 +8,8 @@ struct FForwardViewTargets
 {
 	TUniquePtr<FTexture2D> SceneColorTarget;
 	TUniquePtr<FTexture2D> DBufferTarget;
+	// 데칼 노멀(언리얼 DBufferB). RGB = 덮인 만큼 곱해진 월드 노멀, A = 덮인 정도
+	TUniquePtr<FTexture2D> DBufferNormalTarget;
 	TUniquePtr<FTexture2D> ColorTarget;
 	TUniquePtr<FTexture2D> DepthTarget;
 	TUniquePtr<FTexture2D> FxaaTarget;

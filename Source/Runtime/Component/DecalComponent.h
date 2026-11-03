@@ -110,6 +110,13 @@ public:
 
 	void SetTexture(class UTexture2D* InTexture);
 	void SetTexture(const FString& InTexturePath);
+	// 머티리얼 두 번째 텍스처. Lit에서 DBuffer 노멀로 쌓여 표면 노멀을 바꾼다.
+	void SetNormalTexture(class UTexture2D* InTexture);
+	class UTexture2D* GetTexture() const;
+	class UTexture2D* GetNormalTexture() const;
+	// 노멀맵의 G 채널 방향(OpenGL / DirectX)이 다를 때 켠다
+	void SetFlipNormalGreen(bool bFlip);
+	bool GetFlipNormalGreen() const;
 
 	void SetDecalMaterial(UMaterial* NewDecalMaterial);
 	UMaterial* GetDecalMaterial() const;
@@ -153,5 +160,8 @@ private:
 
 	// 시간 Fade 알파. UE DecalLifetimeOpacity처럼 페이드인과 페이드아웃 중 작은 값이다.
 	float ComputeLifetimeAlpha() const;
+	// 이 데칼 전용 머티리얼 인스턴스를 돌려준다. 공유 에셋이면 복제한다.
+	UMaterial* EnsureMaterialInstance();
+	void SetTextureSlot(int32 Slot, class UTexture2D* InTexture);
 	void UpdateProxyFadeAlpha();
 };

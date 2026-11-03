@@ -30,7 +30,7 @@ PSInput mainVS(float3 Position : POSITION)
 
 //Rasterizer
 //월드 좌표를 TEXCOORD0에 실어 보내면 래스터라이저가 삼각형 안에서 보간해서 픽셀마다 정확한 월드 위치를 넘겨준다.
-float4 mainPS(PSInput Input) : SV_Target
+FDecalOutput mainPS(PSInput Input)
 {
     return ShadeDecal(Input.WorldPos);
 }

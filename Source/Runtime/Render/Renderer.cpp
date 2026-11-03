@@ -49,6 +49,7 @@ namespace
 	// t0은 머티리얼 텍스처 규칙대로 데칼 텍스처, t1은 Depth 방식이 읽는 씬 깊이다.
 	constexpr uint32 DecalTextureSlot = 0;
 	constexpr uint32 DecalSceneDepthSlot = 1;
+	constexpr uint32 DecalNormalTextureSlot = 2;
 
 	// UE CalculateDecalFadeAlpha. 데칼이 화면에서 FadeScreenSize 기준보다 작으면 0, 1.5배 이상이면 1이다.
 	// 같은 데칼도 카메라마다 크기가 달라 뷰마다 계산한다. 직교 뷰는 거리로 크기가 변하지 않아 하지 않는다.
@@ -261,9 +262,9 @@ void FRenderer::RenderAll(FRenderQueue& InQueue, const FMatrix& ViewProjection, 
 	RenderTranslucent(ViewProjection);
 }
 
-void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, EDecalMethod Method)
+void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FRenderingInfo& SceneInfo, FTexture2D* DBuffer, FTexture2D* DBufferNormal, EDecalMethod Method)
 {
-	if (!DBuffer)
+	if (!DBuffer || !DBufferNormal)
 		return;
 
 	FTexture2D* SceneDepth = SceneInfo.DepthStencil.Texture;
@@ -275,6 +276,11 @@ void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& D
 	DBufferDesc.Texture = DBuffer;
 	DBufferDesc.ClearValue.ColorClearValue = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
 	PassInfo.ColorRenderTargets.Add(DBufferDesc);
+	// 노멀은 두 번째 타깃(SV_Target1)이다. 블렌드는 0번 타깃 설정을 같이 쓰므로 노멀도 덮인 만큼 쌓인다.
+	FRenderingDesc NormalDesc{};
+	NormalDesc.Texture = DBufferNormal;
+	NormalDesc.ClearValue.ColorClearValue = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+	PassInfo.ColorRenderTargets.Add(NormalDesc);
 	// 깊이는 읽기 전용 DSV로 꽂는다. Depth 방식은 같은 깊이를 SRV로 동시에 읽고, Mesh 방식은 LESS_EQUAL 테스트만 한다.
 	if (SceneDepth && SceneDepth->GetReadOnlyDSV())
 	{
@@ -473,6 +479,11 @@ bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneVie
 	if (!Decal.bVisible || !Material || Material->Textures.Num() == 0 || !Material->Textures[0])
 		return false;
 
+	// 투영 박스가 화면 밖이면 그리지 않는다. Mesh 방식의 잘라 낸 메시도 이 박스 안에 있다.
+	// 래스터라이저도 화면 밖을 버리지만, 그 전에 드는 상수 갱신·바인딩·드로우 콜과 정점 셰이더를 아낀다.
+	if (!IsAABBInFrustum(Decal.Bounds, View.Frustum))
+		return false;
+
 	// 시간 Fade(컴포넌트)와 화면 크기 Fade(이 뷰)를 곱한다. 다 사라진 데칼은 그리지 않는다.
 	const float FadeAlpha = Decal.FadeAlpha * ComputeDecalScreenFade(Decal, View, Constants.ViewportWidth);
 	if (FadeAlpha <= 0.0f)
@@ -482,9 +493,15 @@ bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneVie
 	Constants.WorldToDecal = Decal.WorldToDecal;
 	Constants.DecalColor = ColorWorkflow::ToShaderColor(Decal.DecalColor);
 	Constants.FadeAlpha = FadeAlpha;
+	// 머티리얼 두 번째 텍스처가 노멀맵이다. 없으면 셰이더가 노멀을 쓰지 않는다.
+	UTexture2D* NormalTexture = Material->Textures.Num() > 1 ? Material->Textures[1] : nullptr;
+	Constants.NormalMode = NormalTexture ? (Material->bFlipNormalGreen ? 2.0f : 1.0f) : 0.0f;
 	RenderCommand::UpdateBufferData(DecalCB.get(), &Constants);
 
 	RenderCommand::BindShaderResource(DecalTextureSlot, Material->Textures[0], EShaderBindFlagBits::Pixel);
+	// 노멀은 색이 아니라 방향 데이터다. 경로로 불러온 텍스처는 sRGB로 만들어지므로 감마 변환 없는 뷰로 읽는다.
+	if (NormalTexture)
+		RenderCommand::BindShaderResource(DecalNormalTextureSlot, NormalTexture, EShaderBindFlagBits::Pixel, true);
 	RenderCommand::BindSamplerState(0, Material->SamplerState, EShaderBindFlagBits::Pixel);
 	return true;
 }

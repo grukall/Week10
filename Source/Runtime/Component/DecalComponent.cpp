@@ -212,29 +212,67 @@ void UDecalComponent::Serialize(FStructuredArchive::FRecord Record)
 }
 
 
-void UDecalComponent::SetTexture(UTexture2D* InTexture)
+UMaterial* UDecalComponent::EnsureMaterialInstance()
 {
-	if (!InTexture) return;
-
 	if (!DecalMaterial)
 	{
 		DecalMaterial = UAssetManager::GetAssetByPath<UMaterial>("DecalMaterial");
 	}
-	if (!DecalMaterial) return;
+	if (!DecalMaterial) return nullptr;
 
+	// 에셋 머티리얼은 모든 데칼이 공유하므로 이 데칼 전용 인스턴스를 만들어 고친다
 	if (!DecalMaterial->bIsInstance)
 	{
 		DecalMaterial = UMaterial::CreateInstance(DecalMaterial);
+		// 프록시가 머티리얼 포인터를 들고 있으니 새 인스턴스로 바꿔 준다
+		MarkSceneProxyDirty();
 	}
+	return DecalMaterial;
+}
 
-	if (DecalMaterial->Textures.Num() > 0)
+void UDecalComponent::SetTextureSlot(int32 Slot, UTexture2D* InTexture)
+{
+	UMaterial* Material = EnsureMaterialInstance();
+	if (!Material) return;
+
+	while (Material->Textures.Num() <= Slot)
 	{
-		DecalMaterial->Textures[0] = InTexture;
+		Material->Textures.Add(nullptr);
 	}
-	else
-	{
-		DecalMaterial->Textures.Add(InTexture);
-	}
+	Material->Textures[Slot] = InTexture;
+}
+
+void UDecalComponent::SetTexture(UTexture2D* InTexture)
+{
+	if (!InTexture) return;
+	SetTextureSlot(0, InTexture);
+}
+
+void UDecalComponent::SetNormalTexture(UTexture2D* InTexture)
+{
+	// null이면 노멀맵을 뗀다. 셰이더는 노멀맵이 없으면 노멀을 바꾸지 않는다.
+	SetTextureSlot(1, InTexture);
+}
+
+UTexture2D* UDecalComponent::GetTexture() const
+{
+	return DecalMaterial && DecalMaterial->Textures.Num() > 0 ? DecalMaterial->Textures[0] : nullptr;
+}
+
+UTexture2D* UDecalComponent::GetNormalTexture() const
+{
+	return DecalMaterial && DecalMaterial->Textures.Num() > 1 ? DecalMaterial->Textures[1] : nullptr;
+}
+
+void UDecalComponent::SetFlipNormalGreen(bool bFlip)
+{
+	if (UMaterial* Material = EnsureMaterialInstance())
+		Material->bFlipNormalGreen = bFlip;
+}
+
+bool UDecalComponent::GetFlipNormalGreen() const
+{
+	return DecalMaterial && DecalMaterial->bFlipNormalGreen;
 }
 
 void UDecalComponent::SetTexture(const FString& InTexturePath)

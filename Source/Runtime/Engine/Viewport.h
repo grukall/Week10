@@ -32,6 +32,7 @@ public:
     FTexture2D* GetFxaaTarget() const { return ViewTargets.FxaaTarget.get(); }
     FTexture2D* GetColorTarget() const { return ViewTargets.ColorTarget.get(); }
     FTexture2D* GetDBufferTarget() const { return ViewTargets.DBufferTarget.get(); }
+    FTexture2D* GetDBufferNormalTarget() const { return ViewTargets.DBufferNormalTarget.get(); }
 
 private:
     TUniquePtr<FViewportClient> EditorClient;

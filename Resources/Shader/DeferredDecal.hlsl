@@ -22,7 +22,7 @@ float2 PixelDecalUV(int2 Pixel, float Depth)
     return DecalLocalToUV(WorldToDecalLocal(ReconstructWorld(Pixel, Depth)));
 }
 
-float4 mainPS(float4 SvPos : SV_Position) : SV_Target
+FDecalOutput mainPS(float4 SvPos : SV_Position)
 {
     int2 Pixel = int2(SvPos.xy);
     float Depth = SceneDepth.Load(int3(Pixel, 0));

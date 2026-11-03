@@ -611,6 +611,8 @@ SamplerState AlbedoSampler : register(s0);
 
 // 조명 전에 데칼 색을 섞는다. RGB = 데칼 색, A = 덮인 정도. Lit 불투명만 읽는다.
 Texture2D DBufferA : register(t16);
+// 조명 전에 데칼 노멀을 섞는다. RGB = 덮인 만큼 곱해진 월드 노멀, A = 덮인 정도.
+Texture2D DBufferB : register(t17);
 
 float3 DiffuseTerm(float3 Il, float3 N, float3 L)
 {
@@ -898,7 +900,17 @@ float4 mainPS(FPSInput Input) : SV_TARGET
 #else
     float3 WorldNormal = Normal;
 #endif
-   
+#if VIEWMODE == VIEWMODE_LIT
+    // 데칼 노멀은 0에서 시작해 알파 블렌드로 쌓였으므로 RGB에 이미 덮인 정도가 곱해져 있다.
+    // 표면 노멀을 덮이지 않은 만큼 남기고 더하면 lerp와 같다.
+    if (bOpaque)
+    {
+        float4 DecalNormal = DBufferB.Load(int3(Input.Position.xy, 0));
+        if (DecalNormal.a > 0.0f)
+            WorldNormal = normalize(normalize(WorldNormal) * (1.0f - DecalNormal.a) + DecalNormal.rgb);
+    }
+#endif
+
 #if VIEWMODE == VIEWMODE_UNLIT
     FinalColor = float4(Albedo, Alpha);
 #elif VIEWMODE == VIEWMODE_WORLDNORMAL

@@ -161,8 +161,10 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
         // 데칼은 조명 전에 DBuffer에 쌓고, UberLit이 Albedo에 섞은 뒤 조명을 계산한다(언리얼 DBuffer 데칼).
         // Prepass 깊이가 있어야 하므로 Lit에서만 한다. 꺼져 있어도 지난 프레임 값이 남지 않게 빈 목록으로 지운다.
         FTexture2D* DBuffer = Viewport.GetDBufferTarget();
-        Renderer->RenderDecalsToDBuffer(Settings.ShowFlags.Decal ? AlbedoDecals : NoDecals, View, ViewRenderingInfo, DBuffer, Settings.DecalMethod);
+        FTexture2D* DBufferNormal = Viewport.GetDBufferNormalTarget();
+        Renderer->RenderDecalsToDBuffer(Settings.ShowFlags.Decal ? AlbedoDecals : NoDecals, View, ViewRenderingInfo, DBuffer, DBufferNormal, Settings.DecalMethod);
         RenderCommand::BindShaderResource(DBufferSRVSlot, DBuffer, EShaderBindFlagBits::Pixel);
+        RenderCommand::BindShaderResource(DBufferNormalSRVSlot, DBufferNormal, EShaderBindFlagBits::Pixel);
     }
 
     // 배경은 화면에서 sRGB 0.3 회색으로 보여야 한다. Linear 작업 흐름에서는 인코딩될 것이므로 디코딩해 지운다.
@@ -208,6 +210,7 @@ void FSceneRenderPipeline::RenderOpaquePass(FViewport& Viewport, const FRenderin
     RenderCommand::EndRenderPass(PassInfo);
     // 다음 프레임에 DBuffer를 RTV로 쓸 때 SRV로 남아 있으면 D3D가 강제로 떼므로 비운다
     RenderCommand::UnbindShaderResource(DBufferSRVSlot, EShaderBindFlagBits::Pixel);
+    RenderCommand::UnbindShaderResource(DBufferNormalSRVSlot, EShaderBindFlagBits::Pixel);
     RenderCommand::UnbindShaderResources(8, 4, EShaderBindFlagBits::Pixel);
     RenderCommand::UnbindShaderResources(8, 2, EShaderBindFlagBits::Vertex);
 }
