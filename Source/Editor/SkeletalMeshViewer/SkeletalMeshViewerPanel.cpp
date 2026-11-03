@@ -156,13 +156,12 @@ void FSkeletalMeshViewerPanel::OnRender()
 
 	int32 DocumentToClose = INDEX_NONE;
 
-	if (ImGui::BeginTabBar("##SkeletalMeshResourceTabs", ImGuiTabBarFlags_Reorderable))
+	if (ImGui::BeginTabBar("##SkeletalMeshResourceTabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs))
 	{
 		for (int32 Index = 0; Index < Documents.Num(); ++Index)
 		{
 			FSkeletalMeshDocument& Document = Documents[Index];
-
-			FString VisibleName = Document.SkeletalMesh->GetName();
+			FString VisibleName = std::filesystem::path(Document.SkeletalMesh->GetPath()).stem().string();
 
 			if (Document.bModified)
 			{
@@ -195,6 +194,18 @@ void FSkeletalMeshViewerPanel::OnRender()
 	if (DocumentToClose != INDEX_NONE)
 	{
 		CloseDocument(DocumentToClose);
+	}
+
+	Document = GetActiveDocument();
+	if (!Document)
+	{
+		SkeletalPreviewScreenRect = {};
+		if (SkeletalPreviewViewport)
+		{
+			SkeletalPreviewViewport->SetOutputSize(0, 0);
+		}
+		ImGui::End();
+		return;
 	}
 
 	const float BottomAreaHeight = 35.0f;
@@ -282,7 +293,9 @@ void FSkeletalMeshViewerPanel::OnRender()
 				Document->EditableLocalPose[Document->SelectedBoneIndex] = MatrixToTransform(SelectedBone.RefLocalMatrix);
 				Document->LocalPoseMatrices[Document->SelectedBoneIndex] = SelectedBone.RefLocalMatrix;
 				if (SkeletalPreviewComponent)
+				{
 					SkeletalPreviewComponent->SetBoneLocalTransform(Document->SelectedBoneIndex, SelectedBone.RefLocalMatrix);
+				}
 				Document->bPoseDirty = true;
 				RefreshSkeletalPreviewMesh(Document->SelectedBoneIndex);
 			}
@@ -302,6 +315,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 			}
 			Document->bPoseDirty = true;
 			RefreshSkeletalPreviewMesh();
+			Document->bModified = false;
 		}
 		if (ImGui::Button("Export"))
 		{
@@ -464,10 +478,12 @@ void FSkeletalMeshViewerPanel::ShutdownSkeletalPreview()
 
 bool FSkeletalMeshViewerPanel::CanRenderSkeletalPreview() const
 {
-	return IsOpen() 
-		&& SkeletalPreviewWorld && SkeletalPreviewViewport && SkeletalPreviewClient 
-		&& SkeletalPreviewViewport->IsVisible() 
-		&& SkeletalPreviewClient->HasCamera();
+	const FSkeletalMeshDocument* Document = GetActiveDocument();
+	return IsOpen()
+		&& SkeletalPreviewWorld && SkeletalPreviewViewport && SkeletalPreviewClient
+		&& SkeletalPreviewViewport->IsVisible()
+		&& SkeletalPreviewClient->HasCamera()
+		&& Document;
 }
 
 void FSkeletalMeshViewerPanel::CreateDefaultSkeletalPreviewScene()

@@ -783,20 +783,25 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 		{
 			LineBatcher->BuildVertexBuffer(ViewWorld);
 		}
-		for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
+
+		if (!bShowSkeletalPreviewOverlay)
 		{
-			if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
+			for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
 			{
-				DirLight->DrawDebug(LineBatcher.get());
+				if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
+				{
+					DirLight->DrawDebug(LineBatcher.get());
+				}
+			}
+			for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+			{
+				if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
+				{
+					SpotLight->DrawDebug(LineBatcher.get());
+				}
 			}
 		}
-		for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
-		{
-			if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
-			{
-				SpotLight->DrawDebug(LineBatcher.get());
-			}
-		}
+
 		AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
 		for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
 		{
