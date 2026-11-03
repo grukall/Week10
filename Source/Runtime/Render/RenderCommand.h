@@ -32,6 +32,8 @@ public:
 
 	static TUniquePtr<FVertexBuffer> CreateStaticVertexBuffer(const void* InVertices, uint32 InSize, uint32 Stride);
 	static TUniquePtr<FVertexBuffer> CreateDynamicVertexBuffer(uint32 MaxSize, uint32 Stride);
+	// UpdateBufferRegion으로 일부 구간을 보존하며 갱신하는 버퍼.
+	static TUniquePtr<FVertexBuffer> CreateDefaultVertexBuffer(uint32 BufferSize, uint32 Stride);
 
 	static TUniquePtr<FIndexBuffer> CreateStaticIndexBuffer(const uint32* InIndices, uint32 MaxIndexCount);
 	static TUniquePtr<FIndexBuffer> CreateDynamicIndexBuffer(uint32 MaxIndexCount);
@@ -68,6 +70,8 @@ public:
 		UpdateBufferData(InBuffer, Data, sizeof(T));
 	}
 	static void UpdateBufferData(FBuffer* InBuffer, const void* Data, uint32 DataSize);
+	// DEFAULT 정점/인덱스 버퍼의 바이트 구간만 갱신한다.
+	static void UpdateBufferRegion(FBuffer* InBuffer, uint32 ByteOffset, const void* Data, uint32 DataSize);
 
 	static void BindVertexBuffer(const FVertexBuffer* VertexBuffer);
 	static void BindIndexBuffer(const FIndexBuffer* IndexBuffer);
