@@ -1,7 +1,7 @@
 #include "EnginePCH.h"
 #include "FbxImporter.h"
 
-#include "SkeletalMeshImportData.h"
+#include "FbxImportData.h"
 #include "Core/EngineLog.h"
 #include "Render/SkeletalMeshData.h"
 
@@ -10,6 +10,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <algorithm>
 
 namespace
 {
@@ -179,7 +180,7 @@ namespace
     }
 
     // 재질 속성에 직접 연결된 파일 텍스처의 경로를 읽는다. 이미지 로딩은 AssetManager에서 한다.
-    FString ExtractTexturePath(FbxSurfaceMaterial* SourceMaterial, const char* PropertyName)
+    FString ExtractTexturePath(FbxSurfaceMaterial* SourceMaterial, const char* PropertyName, FString& OutUVSetName)
     {
         FbxProperty Property = SourceMaterial->FindProperty(PropertyName);
         if (!Property.IsValid())
@@ -195,18 +196,25 @@ namespace
 
             const char* RelativePath = Texture->GetRelativeFileName();
             if (RelativePath && RelativePath[0] != '\0')
+            {
+                OutUVSetName = Texture->UVSet.Get().Buffer();
                 return FString(RelativePath);
+            }
 
             const char* AbsolutePath = Texture->GetFileName();
             if (AbsolutePath && AbsolutePath[0] != '\0')
+            {
+                OutUVSetName = Texture->UVSet.Get().Buffer();
                 return FString(AbsolutePath);
+            }
         }
 
         return {};
     }
 
     // Lambert/Phong 재질의 기본 속성과 텍스처 경로를 엔진 자료형에 복사한다.
-    void ExtractMaterialProperties(FbxSurfaceMaterial* SourceMaterial, FImportedMaterial& OutMaterial)
+    void ExtractMaterialProperties(FbxSurfaceMaterial* SourceMaterial, FImportedMaterial& OutMaterial,
+        FString& OutDiffuseUVSetName, FString& OutNormalUVSetName)
     {
         if (!SourceMaterial)
             return;
@@ -217,8 +225,14 @@ namespace
         {
             const FbxDouble3 Diffuse = Lambert->Diffuse.Get();
             const double DiffuseFactor = Lambert->DiffuseFactor.Get();
+            const FbxDouble3 Transparent = Lambert->TransparentColor.Get();
+            const double TransparencyFactor = Lambert->TransparencyFactor.Get();
 
-            OutMaterial.BaseColor = FLinearColor(static_cast<float>(Diffuse[0] * DiffuseFactor), static_cast<float>(Diffuse[1] * DiffuseFactor), static_cast<float>(Diffuse[2] * DiffuseFactor), 1.0f);
+            // RGB 투명도를 단일 알파로 축약한다.
+            const double Transparency = (Transparent[0] + Transparent[1] + Transparent[2]) / 3.0;
+            const float Opacity = static_cast<float>(std::clamp(1.0 - Transparency * TransparencyFactor, 0.0, 1.0));
+
+            OutMaterial.BaseColor = FLinearColor(static_cast<float>(Diffuse[0] * DiffuseFactor), static_cast<float>(Diffuse[1] * DiffuseFactor), static_cast<float>(Diffuse[2] * DiffuseFactor), Opacity);
             OutMaterial.SpecularColor = FLinearColor(0.0f, 0.0f, 0.0f, 1.0f);
         }
 
@@ -231,8 +245,16 @@ namespace
             OutMaterial.Shininess = static_cast<float>(Phong->Shininess.Get());
         }
 
-        OutMaterial.DiffuseTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sDiffuse);
-        OutMaterial.NormalTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sNormalMap);
+        const FbxProperty OpacityProperty = SourceMaterial->FindProperty("Opacity");
+        if (OpacityProperty.IsValid() &&
+            (OpacityProperty.GetPropertyDataType().GetType() == eFbxDouble ||
+             OpacityProperty.GetPropertyDataType().GetType() == eFbxFloat))
+        {
+            OutMaterial.BaseColor.A = static_cast<float>(std::clamp(OpacityProperty.Get<FbxDouble>(), 0.0, 1.0));
+        }
+
+        OutMaterial.DiffuseTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sDiffuse, OutDiffuseUVSetName);
+        OutMaterial.NormalTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sNormalMap, OutNormalUVSetName);
 
     }
 
@@ -292,7 +314,8 @@ namespace
     }
 
     // 메시 하나의 형상, 면별 속성, 본 가중치를 ImportData에 추가한다.
-    void ExtractMesh(FbxNode* Node, FbxMesh* Mesh, const FBoneIndexMap& BoneMap, FSkeletalMeshImportData& OutData)
+    void ExtractMesh(FbxNode* Node, FbxMesh* Mesh, const FBoneIndexMap& BoneMap,
+        TArray<FImportedMesh>& OutMeshes, TArray<FImportedMaterial>& OutMaterials)
     {
         FImportedMesh ImportedMesh;
         ImportedMesh.Name = Node->GetName();
@@ -314,8 +337,28 @@ namespace
             ImportedMesh.Points.Add(Position);
         }
 
-        // 2. Node의 재질 번호 → 그룹 전체 Materials 번호
+        FbxStringList UVSetNames;
+        Mesh->GetUVSetNames(UVSetNames);
+        const char* DefaultUVSetName = UVSetNames.GetCount() > 0 ? UVSetNames.GetStringAt(0) : nullptr;
+
+        const auto ResolveUVSetName = [&](const FString& RequestedName, const FString& MaterialName) -> const char*
+        {
+            for (int32 UVIndex = 0; UVIndex < UVSetNames.GetCount(); ++UVIndex)
+            {
+                if (RequestedName == UVSetNames.GetStringAt(UVIndex))
+                    return UVSetNames.GetStringAt(UVIndex);
+            }
+
+            if (RequestedName.empty() || RequestedName == "default")
+                return DefaultUVSetName;
+
+            HTR_LOG(Warning, "[FBX UV] UV set not found: Mesh={}, Material={}, UVSet={}", ImportedMesh.Name, MaterialName, RequestedName);
+            return nullptr;
+        };
+
+        // 2. Node의 재질 번호 → 그룹 전체 Materials 번호와 사용할 UV 세트
         TArray<int32> MaterialMap;
+        TArray<const char*> MaterialUVSetNames;
 
         for (int32 MaterialIndex = 0; MaterialIndex < Node->GetMaterialCount(); ++MaterialIndex)
         {
@@ -324,27 +367,45 @@ namespace
             if (!SourceMaterial)
             {
                 MaterialMap.Add(-1);
+                MaterialUVSetNames.Add(DefaultUVSetName);
                 continue;
             }
 
             FImportedMaterial Material;
-            ExtractMaterialProperties(SourceMaterial, Material);
+            FString DiffuseUVSetName;
+            FString NormalUVSetName;
+            ExtractMaterialProperties(SourceMaterial, Material, DiffuseUVSetName, NormalUVSetName);
 
-            MaterialMap.Add(OutData.Materials.Num());
-            OutData.Materials.Add(Material);
+            const char* UVSetName = DefaultUVSetName;
+            if (!Material.DiffuseTexturePath.empty())
+                UVSetName = ResolveUVSetName(DiffuseUVSetName, Material.Name);
+            else if (!Material.NormalTexturePath.empty())
+                UVSetName = ResolveUVSetName(NormalUVSetName, Material.Name);
+
+            if (!Material.DiffuseTexturePath.empty() && !Material.NormalTexturePath.empty())
+            {
+                const char* NormalUVSet = ResolveUVSetName(NormalUVSetName, Material.Name);
+                if (UVSetName && NormalUVSet && FString(UVSetName) != NormalUVSet)
+                {
+                    HTR_LOG(Warning, "[FBX UV] Different diffuse/normal UV sets are unsupported: Mesh={}, Material={}, Diffuse={}, Normal={}",
+                        ImportedMesh.Name, Material.Name, UVSetName, NormalUVSet);
+                }
+            }
+
+            MaterialMap.Add(OutMaterials.Num());
+            MaterialUVSetNames.Add(UVSetName);
+            OutMaterials.Add(Material);
         }
 
         FbxGeometryElementMaterial* MaterialElement = Mesh->GetElementMaterial(0);
 
-        // 3. 첫 번째 UV 세트를 UV0로 사용
-        FbxStringList UVSetNames;
-        Mesh->GetUVSetNames(UVSetNames);
-
-        const char* UVSetName = UVSetNames.GetCount() > 0 ? UVSetNames.GetStringAt(0) : nullptr;
+        // 3. 꼭짓점 속성 데이터 준비
         int32 NormalWedgeCount = 0;
 
-        const FbxGeometryElementTangent* TangentElement = Mesh->GetElementTangent(0);
-        const FbxGeometryElementBinormal* BinormalElement = Mesh->GetElementBinormal(0);
+        const FbxLayer* BaseLayer = Mesh->GetLayer(0);
+        const FbxGeometryElementUV* BaseUVElement = BaseLayer ? BaseLayer->GetUVs() : nullptr;
+        const FbxGeometryElementTangent* TangentElement = BaseLayer ? BaseLayer->GetTangents() : nullptr;
+        const FbxGeometryElementBinormal* BinormalElement = BaseLayer ? BaseLayer->GetBinormals() : nullptr;
         int32 TangentWedgeCount = 0;
 
         const FbxGeometryElementVertexColor* ColorElement = Mesh->GetElementVertexColor(0);
@@ -381,10 +442,15 @@ namespace
                     LocalMaterialIndex = MaterialIndices.GetAt(MappingIndex);
             }
 
+            const char* UVSetName = DefaultUVSetName;
             if (LocalMaterialIndex >= 0 && LocalMaterialIndex < MaterialMap.Num())
             {
                 Polygon.MaterialSlotIndex = MaterialMap[LocalMaterialIndex];
+                UVSetName = MaterialUVSetNames[LocalMaterialIndex];
             }
+
+            // 베이스 레이어와 다른 UV를 사용하면 Build에서 탄젠트를 다시 계산한다.
+            const bool bUseSourceTangents = UVSetName && BaseUVElement && Mesh->GetElementUV(UVSetName) == BaseUVElement;
 
             const int32 VertexCount = Mesh->GetPolygonSize(PolygonIndex);
 
@@ -415,10 +481,10 @@ namespace
                 // 전체 면의 꼭짓점을 한 줄로 나열했을 때 현재 꼭짓점의 번호다.
                 const int32 PolygonVertexIndex = Mesh->GetPolygonVertexIndex(PolygonIndex) + VertexIndex;
 
-                // 원본 탄젠트만 읽는다. 없는 경우의 생성 처리는 아직 구현하지 않았다.
+                // 원본 탄젠트를 사용할 수 없으면 Build의 재계산 경로를 사용한다.
                 FbxVector4 SourceTangent;
 
-                if (Wedge.UVs.Num() > 0 && ReadFbxVectorElement(TangentElement, Wedge.ControlPointIndex, PolygonIndex, PolygonVertexIndex, SourceTangent))
+                if (bUseSourceTangents && Wedge.UVs.Num() > 0 && ReadFbxVectorElement(TangentElement, Wedge.ControlPointIndex, PolygonIndex, PolygonVertexIndex, SourceTangent))
                 {
                     const FVector Normal = Wedge.Normal.GetSafeNormal();
                     FVector Tangent(static_cast<float>(SourceTangent[0]), static_cast<float>(SourceTangent[1]), static_cast<float>(SourceTangent[2]));
@@ -563,7 +629,15 @@ namespace
             }
         }
 
-        OutData.Meshes.Add(ImportedMesh);
+        OutMeshes.Add(std::move(ImportedMesh));
+    }
+
+    void CollectMeshNodes(FbxNode* Node, TArray<FbxNode*>& Nodes)
+    {
+        if (Node->GetMesh())
+            Nodes.Add(Node);
+        for (int32 Index = 0; Index < Node->GetChildCount(); ++Index)
+            CollectMeshNodes(Node->GetChild(Index), Nodes);
     }
 
     // Skin이 없어도 본 아래에 붙어 있는 메시(머리카락 등)는 함께 수집한다.
@@ -586,7 +660,7 @@ namespace
                 {
                     const int32 MeshIndex = OutData.Meshes.Num();
 
-                    ExtractMesh(Node, Mesh, BoneMap, OutData);
+                    ExtractMesh(Node, Mesh, BoneMap, OutData.Meshes, OutData.Materials);
 
                     FImportedMesh& ImportedMesh = OutData.Meshes[MeshIndex];
                     ImportedMesh.AttachedBoneIndex = BoneIt->second;
@@ -1120,10 +1194,11 @@ namespace
 void FFbxImporter::NormalizeScene(fbxsdk::FbxScene* Scene)
 {
     // 엔진: +X 앞, +Y 오른쪽, +Z 위, 왼손 좌표계.
+    // FBX의 Front는 화면 밖을 향하므로 엔진 앞 방향과 부호가 반대다.
     const FbxAxisSystem EngineAxis(
-        FbxAxisSystem::eZAxis,
-        static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),
-        FbxAxisSystem::eLeftHanded
+        FbxAxisSystem::eZAxis,      // Up: +Z 방향
+        static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),  // Front: -X 방향
+        FbxAxisSystem::eLeftHanded  // 나머지: 왼손 좌표계
     );
 
     const bool bAxisChanged = Scene->GetGlobalSettings().GetAxisSystem() != EngineAxis;
@@ -1191,6 +1266,16 @@ bool FFbxImporter::ResolveTexturePath(const FString& FbxPath, FString& TexturePa
 
 bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>& OutData)
 {
+    FFbxImportData Imported;
+    if (!ParseFbx(Path, Imported))
+        return false;
+
+    OutData = std::move(Imported.SkeletalGroups);
+    return true;
+}
+
+bool FFbxImporter::ParseFbx(const FString& Path, FFbxImportData& OutData)
+{
     // FBX SDK 객체의 생성과 수명을 관리하는 최상위 객체
     FbxManager* Manager = FbxManager::Create();
     if (!Manager)
@@ -1236,8 +1321,57 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
     }
 
     FbxNode* RootNode = Scene->GetRootNode();
+    TArray<FbxNode*> MeshNodes;
+    CollectMeshNodes(RootNode, MeshNodes);
+    if (MeshNodes.IsEmpty())
+    {
+        Manager->Destroy();
+        return false;
+    }
+
+    const bool bHasSkin = std::any_of(MeshNodes.begin(), MeshNodes.end(), [](FbxNode* Node)
+    {
+        return Node->GetMesh()->GetDeformerCount(FbxDeformer::eSkin) > 0;
+    });
+    FFbxImportData Result;
+
+    // 스킨이 없는 FBX만 스태틱으로 합친다. 본에 부착된 메시의 기존 수집 경로는 유지한다.
+    if (!bHasSkin)
+    {
+        const FBoneIndexMap NoBones;
+        for (FbxNode* Node : MeshNodes)
+        {
+            ExtractMesh(Node, Node->GetMesh(), NoBones, Result.StaticMesh.Meshes, Result.StaticMesh.Materials);
+
+            FbxAMatrix GeometryTransform;
+            GeometryTransform.SetT(Node->GetGeometricTranslation(FbxNode::eSourcePivot));
+            GeometryTransform.SetR(Node->GetGeometricRotation(FbxNode::eSourcePivot));
+            GeometryTransform.SetS(Node->GetGeometricScaling(FbxNode::eSourcePivot));
+
+            const FbxAMatrix NodeTransform = Node->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE);
+            FImportedMesh& ImportedMesh = Result.StaticMesh.Meshes[Result.StaticMesh.Meshes.Num() - 1];
+            ImportedMesh.MeshToSkeletonBindMatrix = ConvertFbxMatrix(NodeTransform * GeometryTransform);
+        }
+
+        for (FImportedMaterial& Material : Result.StaticMesh.Materials)
+        {
+            ResolveTexturePath(Path, Material.DiffuseTexturePath);
+            ResolveTexturePath(Path, Material.NormalTexturePath);
+        }
+
+        Manager->Destroy();
+        OutData = std::move(Result);
+        return true;
+    }
+
     TArray<FFbxSkeletalMeshGroup> Groups;
     CollectSkeletalMeshGroups(RootNode, RootNode, Groups);
+    if (Groups.IsEmpty())
+    {
+        HTR_LOG(Error, "[FBX] Skin meshes have no valid skeleton group: {}", Path);
+        Manager->Destroy();
+        return false;
+    }
 
     TArray<FSkeletalMeshImportData> ImportedGroups;
 
@@ -1262,7 +1396,7 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
         }
 
         for (FbxNode* MeshNode : Group.MeshNodes)
-            ExtractMesh(MeshNode, MeshNode->GetMesh(), BoneMap, ImportedData);
+            ExtractMesh(MeshNode, MeshNode->GetMesh(), BoneMap, ImportedData.Meshes, ImportedData.Materials);
 
         if (!ExtractSkinningTypes(Group, ImportedData))
         {
@@ -1301,7 +1435,8 @@ bool FFbxImporter::ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>
     }
 
     // SDK 객체가 사라져도 이름·점·행렬 등 복사된 엔진 데이터는 유지된다.
-    OutData = std::move(ImportedGroups);
+    Result.SkeletalGroups = std::move(ImportedGroups);
+    OutData = std::move(Result);
 
     // Manager가 소유한 Scene과 나머지 SDK 객체들을 함께 해제한다.
     Manager->Destroy();

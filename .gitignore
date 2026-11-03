@@ -446,6 +446,8 @@ editor.ini
 
 # Bake 결과 (실행 시 자동 생성, 원본을 수정하면 지우고 다시 실행)
 *.obj.bin
+*.[fF][bB][xX].bin
+*.[fF][bB][xX].bin.tmp
 
 # 셰이더 컴파일 캐시 (실행 시 자동 생성)
 /Intermediate/

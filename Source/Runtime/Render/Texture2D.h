@@ -32,12 +32,14 @@ public:
 
 	uint32 GetWidth()  const { return Texture ? Texture->GetWidth() : 0; }
 	uint32 GetHeight() const { return Texture ? Texture->GetHeight() : 0; }
+	bool HasTransparency() const { return bHasTransparency; }
 
 	FTexture2D* GetResource() const { return Texture.get(); }
 private:
 	void SetResource(TUniquePtr<FTexture2D> InResource) { Texture = std::move(InResource); }
 
 	TUniquePtr<FTexture2D> Texture;
+	bool bHasTransparency = false;
 
 };
 

@@ -10,6 +10,7 @@ namespace fbxsdk
     class FbxNode;
 }
 struct FSkeletalMeshImportData;
+struct FFbxImportData;
 struct FSkeletalMeshData;
 
 class FFbxImporter
@@ -17,7 +18,8 @@ class FFbxImporter
 public:
     // 파일 로드 → 좌표계 통일 → 그룹별 데이터 추출 → 엔진 자료형으로 결과 전달.
     static bool ParseFbx(const FString& Path, TArray<FSkeletalMeshImportData>& OutData);
-    
+    static bool ParseFbx(const FString& Path, FFbxImportData& OutData);
+
     static void NormalizeScene(fbxsdk::FbxScene* Scene);
     static FString BuildSourceNodePath(fbxsdk::FbxNode* Node);
 

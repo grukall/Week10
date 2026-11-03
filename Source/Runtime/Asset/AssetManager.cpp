@@ -12,7 +12,9 @@
 #include "Asset/ObjImporter/ObjImporter.h"
 #include "Asset/FbxImporter/FbxImporter.h"
 #include "Asset/FbxImporter/SkeletalMeshBuilder.h"
-#include "Asset/FbxImporter/SkeletalMeshImportData.h"
+#include "Asset/FbxImporter/FbxImportData.h"
+#include "Asset/FbxImporter/FbxStaticMeshBuilder.h"
+#include "Asset/FbxImporter/FbxMeshBake.h"
 #include "Render/SkeletalMesh.h"
 
 
@@ -169,7 +171,6 @@ namespace
 			Material->Shininess = Slot.Shininess;
 			Material->SpecularColor = Slot.SpecularColor;
 			Material->SamplerState = ESamplerState::LinearWrap;
-			Material->SetBlendState(Material->BaseColor.A < 1.0f ? EBlendState::AlphaBlend : EBlendState::Opaque);
 
 			const auto SetTexture = [Material](int32 TextureSlot, const FString& TexturePath, bool bSRGB)
 			{
@@ -186,6 +187,9 @@ namespace
 
 			SetTexture(0, Slot.DiffuseTexturePath, true);
 			SetTexture(1, Slot.NormalTexturePath, false);
+			const UTexture2D* DiffuseTexture = Material->Textures[0];
+			const bool bTransparent = Material->BaseColor.A < 1.0f || (DiffuseTexture && DiffuseTexture->HasTransparency());
+			Material->SetBlendState(bTransparent ? EBlendState::AlphaBlend : EBlendState::Opaque);
 			Mesh->Materials.Add(Material);
 		}
 
@@ -275,27 +279,57 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 	}
 	if (Extension == ".fbx" || Extension == ".FBX")
 	{
-		TArray<FSkeletalMeshImportData> ImportGroups;
-		if (!FFbxImporter::ParseFbx(Path, ImportGroups))
-			return;
-
-		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, ImportGroups.Num());
-
-		for (int32 GroupIndex = 0; GroupIndex < ImportGroups.Num(); ++GroupIndex)
+		// 캐시를 사용할 수 없을 때만 SDK 파싱과 CPU 메시 변환을 수행한다.
+		FFbxMeshData MeshData;
+		if (!FFbxMeshBake::ReadBaked(Path, MeshData))
 		{
-			const FSkeletalMeshImportData& ImportData = ImportGroups[GroupIndex];
-			const FString GroupKey =
-				Key + "#Group" + std::to_string(GroupIndex);
+			FFbxImportData ImportData;
+			if (!FFbxImporter::ParseFbx(Path, ImportData))
+				return;
 
-			FSkeletalMeshData MeshData;
-			if (!FSkeletalMeshBuilder::Build(ImportData, MeshData))
+			bool bAllGroupsBuilt = true;
+			if (!ImportData.StaticMesh.Meshes.IsEmpty())
 			{
-				HTR_LOG(Error, "[FBX] Build failed: File={}, Group={}",
-					Path, GroupIndex);
-				continue;
+				MeshData.StaticMesh = MakeUnique<FStaticMeshData>();
+				if (!FFbxStaticMeshBuilder::Build(ImportData.StaticMesh, *MeshData.StaticMesh))
+					return;
+			}
+			else
+			{
+				MeshData.SkeletalGroups.SetNum(ImportData.SkeletalGroups.Num());
+				for (int32 GroupIndex = 0; GroupIndex < ImportData.SkeletalGroups.Num(); ++GroupIndex)
+				{
+					if (!FSkeletalMeshBuilder::Build(ImportData.SkeletalGroups[GroupIndex], MeshData.SkeletalGroups[GroupIndex]))
+					{
+						HTR_LOG(Error, "[FBX] Build failed: File={}, Group={}", Path, GroupIndex);
+						bAllGroupsBuilt = false;
+					}
+				}
 			}
 
-			USkeletalMesh* Mesh = CreateSkeletalMesh(std::move(MeshData));
+			// 일부 그룹이 실패한 결과는 저장하지 않는다. 저장 실패 시에도 현재 메시 로딩은 계속한다.
+			if (bAllGroupsBuilt)
+				FFbxMeshBake::WriteBaked(Path, MeshData);
+		}
+
+		// 캐시에서 읽은 데이터도 기존 메시 생성 경로에서 재질과 GPU 자원을 만든다.
+		if (MeshData.StaticMesh)
+		{
+			if (UStaticMesh* Mesh = CreateStaticMesh(MeshData.StaticMesh.get()))
+			{
+				RegisterAsset(Key, Mesh);
+				AssetPathMap.Add(Key, Path);
+				HTR_LOG(Info, "[FBX Static] Registered: Key={}, Vertices={}", Key, Mesh->MeshData.Vertices.Num());
+			}
+			return;
+		}
+
+		HTR_LOG(Info, "[FBX] File={}, Groups={}", Path, MeshData.SkeletalGroups.Num());
+		for (int32 GroupIndex = 0; GroupIndex < MeshData.SkeletalGroups.Num(); ++GroupIndex)
+		{
+			const FString GroupKey =
+				Key + "#Group" + std::to_string(GroupIndex);
+			USkeletalMesh* Mesh = CreateSkeletalMesh(std::move(MeshData.SkeletalGroups[GroupIndex]));
 			if (!Mesh)
 			{
 				HTR_LOG(Error, "[FBX] Asset creation failed: File={}, Group={}",
@@ -307,9 +341,8 @@ void UAssetManager::LoadAsset(const FString& Key, const FString& Path)
 			AssetPathMap.Add(GroupKey, Path);
 
 			HTR_LOG(Info,
-				"[FBX] Registered: Key={}, Meshes={}, Vertices={}, Bones={}",
+				"[FBX] Registered: Key={}, Vertices={}, Bones={}",
 				GroupKey,
-				ImportData.Meshes.Num(),
 				Mesh->MeshData.Vertices.Num(),
 				Mesh->MeshData.RefBones.Num());
 
@@ -537,6 +570,17 @@ UTexture2D* UAssetManager::LoadTexture(const FString& InPath, bool bGenerateMips
 
 	UTexture2D* Asset = NewObject<UTexture2D>();
 	Asset->SetResource(std::move(Resource));
+	if (Data.Format == DXGI_FORMAT_R8G8B8A8_UNORM)
+	{
+		for (int32 AlphaIndex = 3; AlphaIndex < Data.Pixels.Num(); AlphaIndex += 4)
+		{
+			if (Data.Pixels[AlphaIndex] < 255)
+			{
+				Asset->bHasTransparency = true;
+				break;
+			}
+		}
+	}
 	RegisterAsset(InPath, Asset);
 
 	return Asset;
