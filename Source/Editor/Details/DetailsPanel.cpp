@@ -16,6 +16,7 @@
 #include "Editor/HitoriEd/EditorFileUtils.h"
 #include "Component/PrimitiveComponent.h"
 #include "Component/StaticMeshComponent.h"
+#include "Component/SkeletalMeshComponent.h"
 #include "Component/TextRenderComponent.h"
 #include "Component/ParticleSubUVComponent.h"
 #include "Component/RotatingMovementComponent.h"
@@ -25,6 +26,7 @@
 #include "Component/HitSquashComponent.h"
 #include "Asset/AssetManager.h"
 #include "Render/Material.h"
+#include "Render/SkeletalMesh.h"
 #include "Render/Texture2D.h"
 #include "Text/Font.h"
 #include "UObject/UObjectIterator.h"
@@ -350,6 +352,71 @@ namespace
 					ImGui::SetItemDefaultFocus();
 			}
 			ImGui::EndCombo();
+		}
+	}
+
+	void DrawSkeletalMeshSlot(UObject* Owner, USkeletalMesh** SkeletalMeshPtr)
+	{
+		USkeletalMesh* Current = *SkeletalMeshPtr;
+		const FString CurrentPath = Current ? Current->GetPath() : "";
+		const FString CurrentFileName = Current ? GetAssetDisplayName(CurrentPath) : "None";
+		const auto SetMesh = [Owner, SkeletalMeshPtr](USkeletalMesh* Mesh)
+		{
+			if (USkinnedMeshComponent* MeshComponent = Cast<USkinnedMeshComponent>(Owner))
+				MeshComponent->SetSkeletalMesh(Mesh);
+			else
+				*SkeletalMeshPtr = Mesh;
+		};
+
+		ImGui::SetNextItemWidth(-1.0f);
+		if (ImGui::BeginCombo("##SkeletalMesh", CurrentFileName.c_str()))
+		{
+			if (ImGui::Selectable("None", Current == nullptr))
+				SetMesh(nullptr);
+
+			struct FMeshItem
+			{
+				FString DisplayName;
+				FString Path;
+				USkeletalMesh* Mesh;
+			};
+			TArray<FMeshItem> Items;
+			for (TObjectIterator<USkeletalMesh> Itr; Itr; ++Itr)
+			{
+				const FString ItemPath = Itr->GetPath();
+				if (!ItemPath.empty())
+					Items.Add({ GetAssetDisplayName(ItemPath), ItemPath, *Itr });
+			}
+			std::sort(Items.begin(), Items.end(), [](const FMeshItem& A, const FMeshItem& B)
+			{
+				return _stricmp(A.DisplayName.c_str(), B.DisplayName.c_str()) < 0;
+			});
+
+			for (const FMeshItem& Item : Items)
+			{
+				const bool bSelected = Item.Mesh == Current;
+				ImGui::PushID(Item.Mesh);
+				if (ImGui::Selectable(Item.DisplayName.c_str(), bSelected))
+					SetMesh(Item.Mesh);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", Item.Path.c_str());
+				if (bSelected)
+					ImGui::SetItemDefaultFocus();
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
+
+		if (ImGui::IsItemHovered() && Current)
+			ImGui::SetTooltip("%s", CurrentPath.c_str());
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(EditorDragDrop::SkeletalMesh))
+			{
+				if (Payload->DataSize == sizeof(USkeletalMesh*))
+					SetMesh(*static_cast<USkeletalMesh**>(Payload->Data));
+			}
+			ImGui::EndDragDropTarget();
 		}
 	}
 
@@ -1009,6 +1076,10 @@ namespace
 			{
 				DrawMeshSlot(Object, reinterpret_cast<UStaticMesh**>(ObjPtr));
 			}
+			else if (Property.Class == USkeletalMesh::StaticClass())
+			{
+				DrawSkeletalMeshSlot(Object, reinterpret_cast<USkeletalMesh**>(ObjPtr));
+			}
 			break;
 		}
 		default:
@@ -1098,6 +1169,12 @@ namespace
 			if (ImGui::MenuItem("StaticMesh Component"))
 			{
 				OutSelectedComponent = Actor->AddComponent(UStaticMeshComponent::StaticClass(), FString(ComponentNameInputBuf));
+				ComponentNameInputBuf[0] = '\0';
+				ImGui::CloseCurrentPopup();
+			}
+			if (ImGui::MenuItem("SkeletalMesh Component"))
+			{
+				OutSelectedComponent = Actor->AddComponent(USkeletalMeshComponent::StaticClass(), FString(ComponentNameInputBuf));
 				ComponentNameInputBuf[0] = '\0';
 				ImGui::CloseCurrentPopup();
 			}

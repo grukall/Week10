@@ -153,6 +153,12 @@ void FContentDrawerPanel::OnRender()
 
 					ImGui::EndDragDropSource();
 				}
+				if (SkeletalMeshAsset && ImGui::BeginDragDropSource())
+				{
+					ImGui::SetDragDropPayload(EditorDragDrop::SkeletalMesh, &SkeletalMeshAsset, sizeof(USkeletalMesh*));
+					ImGui::TextUnformatted(FilenameString.c_str());
+					ImGui::EndDragDropSource();
+				}
 				// 더블 클릭 이벤트 처리
 				if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
 				{

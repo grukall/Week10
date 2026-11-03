@@ -3,6 +3,7 @@
 #include "Math/Rect.h"
 #include "Camera/CameraProjection.h"
 #include "Render/ViewMode.h"
+#include "Render/ShowFlags.h"
 #include "Math/Frustum.h"
 #include "Collision/Ray.h"
 #include "Asset/LOD/StaticMeshLODSelector.h"
@@ -17,6 +18,7 @@ struct FSceneView
 
     FRect ViewRect;
     FViewRenderMode RenderMode;
+    FEngineShowFlags ShowFlags;
     FCameraProjection ProjectionSettings;
     FVector CameraLocation;
     FVector RenderLocation;

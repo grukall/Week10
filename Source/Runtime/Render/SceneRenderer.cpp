@@ -418,6 +418,9 @@ void FSceneRenderer::BuildRenderQueue(const FSceneView& View, FSceneRenderData& 
             continue;
 
         UPrimitiveComponent* Primitive = Found->Primitive;
+        if (!View.ShowFlags.SkeletalMeshes && Cast<USkinnedMeshComponent>(Primitive))
+            continue;
+
         if (UParticleSubUVComponent* ParticleComponent = Cast<UParticleSubUVComponent>(Primitive))
         {
             const TArray<FParticle>& Particles = ParticleComponent->GetParticlesForView();

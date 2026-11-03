@@ -3,16 +3,25 @@
 #include "MeshComponent.h"
 #include "Render/Buffer.h"
 #include "Render/SkeletalMeshData.h"
-
-class USkeletalMesh;
+#include "Render/SkeletalMesh.h"
 
 class USkinnedMeshComponent : public UMeshComponent
 {
 	DECLARE_CLASS(USkinnedMeshComponent, UMeshComponent)
 
+	REFLECT_START(USkinnedMeshComponent)
+		PROPERTY(SkeletalMesh)
+		FUNCTION(GetSkeletalMesh)
+		FUNCTION(SetSkeletalMesh)
+	REFLECT_END()
+
 public:
 	USkinnedMeshComponent();
 	~USkinnedMeshComponent() override = default;
+
+    using Super::Serialize;
+    void Serialize(json& Handle, bool bIsLoading) override;
+    void Serialize(FStructuredArchive::FRecord Record) override;
 
     void TickComponent(float DeltaTime) override;
 	// 렌더링에 필요한 재질과 인덱스 버퍼를 포함한 에셋을 설정한다.
@@ -21,6 +30,7 @@ public:
 	// SkeletalMeshData를 설정하면 내부적으로 Skinning 관련 버퍼를 초기화
     void SetSkeletalMeshData(const FSkeletalMeshData* InSkeletalMeshData);
     // INDEX_NONE이면 컴포넌트가 기록한 변경 범위를 갱신한다.
+    // BoneIndex를 지정해도 Setter에 누적된 다른 변경 구간을 함께 처리한다.
     void RefreshMesh(int32 BoneIndex = INDEX_NONE);
     // RefreshMesh 이후의 CPU 스키닝 결과를 읽는다.
     const TArray<FVertexPNCT>& GetSkinnedVertices() const;
@@ -30,6 +40,9 @@ public:
     const FVertexBuffer* GetDynamicVertexBuffer() const;
     // 현재 변형된 메시 전체의 로컬 AABB
     FBox CalcLocalBounds() const override;
+    // 씬 BVH와 LocalBounds로 후보를 거른 뒤 현재 스키닝된 삼각형을 검사한다.
+    bool LineTraceComponent(const FRay& WorldRay, FHitResult& OutHit) override;
+    bool LineTraceComponentLocal(const FRay& LocalRay, float& OutT) override;
     int32 GetNumMaterials() const override;
     FString GetMaterialSlotName(int32 SlotIndex) const override;
     UMaterial* GetDefaultMaterial(int32 SlotIndex) const override;
@@ -38,20 +51,27 @@ public:
 protected:
     // 새로운 메시의 본계층에 맞게 다시 초기화
     virtual void OnMeshDataChanged();
-    // 자식이 ComponentSpaceTransforms를 갱신하고 MarkSkinningDirty를 호출한다.
+    // Setter에서 기록한 구간의 ComponentSpaceTransforms를 갱신한다.
     virtual void RefreshBoneTransforms(int32 BoneIndex);
     // 자식이 본 계층과 기준 포즈를 읽기 위한 접근 함수.
     const FSkeletalMeshData* GetSkeletalMeshData() const;
-    // 자식이 스키닝 결과의 재계산을 요청한다.
+    // 전체 포즈 또는 지정한 본 구간의 재계산을 요청한다.
     void MarkSkinningDirty();
+    void MarkSkinningDirty(int32 FirstBone, int32 EndBone);
 	// RefBones와 같은 인덱스. 자식 클래스가 부모부터 누적한 현재 본 변환을 채운다.
 	TArray<FMatrix> ComponentSpaceTransforms;
+	// 시작 본 인덱스 -> 갱신 구간 끝(미포함). 변경이 없으면 INDEX_NONE.
+	TArray<int32> DirtyBoneEndIndices;
+	// 위 배열에서 실제로 변경된 시작 본만 보관한다. 갱신 전에 정렬·병합한다.
+	TArray<int32> DirtyBoneStarts;
 
 private:
     USkeletalMesh* SkeletalMesh = nullptr;
     // SkeletalMeshData가 변경될때 멤버 변수를 초기화
     void InitializeSkinningResources();
-    // 본 행렬이 변경된 정점만 스키닝한다.
+    void PrepareDirtyBoneRanges();
+    void ClearDirtyBoneRanges();
+    // 기록된 본 구간에 연결된 정점만 스키닝한다.
     void UpdateSkinning();
     void SkinVertex(uint32 VertexIndex);
     void UpdateSkinningBounds();
