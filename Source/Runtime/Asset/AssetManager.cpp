@@ -169,7 +169,6 @@ namespace
 			Material->Shininess = Slot.Shininess;
 			Material->SpecularColor = Slot.SpecularColor;
 			Material->SamplerState = ESamplerState::LinearWrap;
-			Material->SetBlendState(Material->BaseColor.A < 1.0f ? EBlendState::AlphaBlend : EBlendState::Opaque);
 
 			const auto SetTexture = [Material](int32 TextureSlot, const FString& TexturePath, bool bSRGB)
 			{
@@ -186,6 +185,9 @@ namespace
 
 			SetTexture(0, Slot.DiffuseTexturePath, true);
 			SetTexture(1, Slot.NormalTexturePath, false);
+			const UTexture2D* DiffuseTexture = Material->Textures[0];
+			const bool bTransparent = Material->BaseColor.A < 1.0f || (DiffuseTexture && DiffuseTexture->HasTransparency());
+			Material->SetBlendState(bTransparent ? EBlendState::AlphaBlend : EBlendState::Opaque);
 			Mesh->Materials.Add(Material);
 		}
 
@@ -523,6 +525,17 @@ UTexture2D* UAssetManager::LoadTexture(const FString& InPath, bool bGenerateMips
 
 	UTexture2D* Asset = NewObject<UTexture2D>();
 	Asset->SetResource(std::move(Resource));
+	if (Data.Format == DXGI_FORMAT_R8G8B8A8_UNORM)
+	{
+		for (int32 AlphaIndex = 3; AlphaIndex < Data.Pixels.Num(); AlphaIndex += 4)
+		{
+			if (Data.Pixels[AlphaIndex] < 255)
+			{
+				Asset->bHasTransparency = true;
+				break;
+			}
+		}
+	}
 	RegisterAsset(InPath, Asset);
 
 	return Asset;

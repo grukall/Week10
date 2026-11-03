@@ -9,6 +9,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <algorithm>
 
 namespace
 {
@@ -265,8 +266,14 @@ namespace
         {
             const FbxDouble3 Diffuse = Lambert->Diffuse.Get();
             const double DiffuseFactor = Lambert->DiffuseFactor.Get();
+            const FbxDouble3 Transparent = Lambert->TransparentColor.Get();
+            const double TransparencyFactor = Lambert->TransparencyFactor.Get();
 
-            OutMaterial.BaseColor = FLinearColor(static_cast<float>(Diffuse[0] * DiffuseFactor), static_cast<float>(Diffuse[1] * DiffuseFactor), static_cast<float>(Diffuse[2] * DiffuseFactor), 1.0f);
+            // RGB 투명도를 단일 알파로 축약한다.
+            const double Transparency = (Transparent[0] + Transparent[1] + Transparent[2]) / 3.0;
+            const float Opacity = static_cast<float>(std::clamp(1.0 - Transparency * TransparencyFactor, 0.0, 1.0));
+
+            OutMaterial.BaseColor = FLinearColor(static_cast<float>(Diffuse[0] * DiffuseFactor), static_cast<float>(Diffuse[1] * DiffuseFactor), static_cast<float>(Diffuse[2] * DiffuseFactor), Opacity);
             OutMaterial.SpecularColor = FLinearColor(0.0f, 0.0f, 0.0f, 1.0f);
         }
 
@@ -277,6 +284,14 @@ namespace
 
             OutMaterial.SpecularColor = FLinearColor(static_cast<float>(Specular[0] * SpecularFactor), static_cast<float>(Specular[1] * SpecularFactor), static_cast<float>(Specular[2] * SpecularFactor), 1.0f);
             OutMaterial.Shininess = static_cast<float>(Phong->Shininess.Get());
+        }
+
+        const FbxProperty OpacityProperty = SourceMaterial->FindProperty("Opacity");
+        if (OpacityProperty.IsValid() &&
+            (OpacityProperty.GetPropertyDataType().GetType() == eFbxDouble ||
+             OpacityProperty.GetPropertyDataType().GetType() == eFbxFloat))
+        {
+            OutMaterial.BaseColor.A = static_cast<float>(std::clamp(OpacityProperty.Get<FbxDouble>(), 0.0, 1.0));
         }
 
         OutMaterial.DiffuseTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sDiffuse, OutDiffuseUVSetName);
