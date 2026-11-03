@@ -12,7 +12,7 @@
 #include "Asset/ObjImporter/ObjImporter.h"
 #include "Asset/FbxImporter/FbxImporter.h"
 #include "Asset/FbxImporter/SkeletalMeshBuilder.h"
-#include "Asset/FbxImporter/SkeletalMeshImportData.h"
+#include "Asset/FbxImporter/FbxImportData.h"
 #include "Render/SkeletalMesh.h"
 
 

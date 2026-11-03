@@ -1,7 +1,7 @@
 #include "EnginePCH.h"
 #include "SkeletalMeshBuilder.h"
 
-#include "SkeletalMeshImportData.h"
+#include "FbxImportData.h"
 #include "Render/SkeletalMeshData.h"
 #include "Core/EngineLog.h"
 
