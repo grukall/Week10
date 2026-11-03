@@ -47,6 +47,8 @@ void FSettingsPanel::OnRender()
 	ImGui::Checkbox("Object UUID", &Settings.bShowUUID);
 	ImGui::Checkbox("Grid", &Settings.bDrawGrid);
 	ImGui::Checkbox("Exponential Height Fog", &Settings.bExponentialHeightFog);
+	ImGui::Checkbox("Decal", &Settings.bDecal);
+	ImGui::Checkbox("Decal Mesh Method", &Settings.bDecalMeshMethod);
 	ImGui::Checkbox("Tile Light Count", &Settings.bVisualizeTileLightCount);
 	ImGui::Checkbox("Vignette", &Settings.bVignette);
 
@@ -110,7 +112,7 @@ void FSettingsPanel::OnRender()
 
 	UCameraComponent* CamCom = World->GetMainCamera()->GetCameraComponent();
 
-	ImGui::SliderFloat("Move Speed", &Settings.CameraSpeed, 0.1f, 10.0f, "%.2f");
+	ImGui::SliderFloat("Move Speed", &Settings.CameraSpeed, 0.1f, 100.0f, "%.2f");
 	CamCom->SetMoveSpeed(Settings.CameraSpeed);
 
 	ImGui::SliderFloat("Rotate Sensitivity", &Settings.MouseSensitivity, 0.01f, 1.0f, "%.2f");
@@ -162,6 +164,8 @@ bool FSettingsPanel::SaveSettings() const
 	File << "ShowUUID=" << Settings.bShowUUID << "\n";
 	File << "DrawGrid=" << Settings.bDrawGrid << "\n";
 	File << "ExponentialHeightFog=" << Settings.bExponentialHeightFog << "\n";
+	File << "Decal=" << Settings.bDecal << "\n";
+	File << "DecalMeshMethod=" << Settings.bDecalMeshMethod << "\n";
 	File << "\n";
 
 	File << "[Rendering]\n";
@@ -319,6 +323,8 @@ bool FSettingsPanel::LoadSettings()
 				else if (Key == "ShowUUID") Settings.bShowUUID = std::stoi(ValueStr);
 				else if (Key == "DrawGrid") Settings.bDrawGrid = std::stoi(ValueStr);
 				else if (Key == "ExponentialHeightFog") Settings.bExponentialHeightFog = std::stoi(ValueStr);
+				else if (Key == "Decal") Settings.bDecal = std::stoi(ValueStr);
+				else if (Key == "DecalMeshMethod") Settings.bDecalMeshMethod = std::stoi(ValueStr);
 
 				else if (Key == "EnableFXAA") Settings.bEnableFXAA = std::stoi(ValueStr);
 				else if (Key == "DepthView") Settings.bDepthView = std::stoi(ValueStr);

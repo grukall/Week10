@@ -21,6 +21,9 @@ void FForwardViewTargets::Resize(const uint32 InWidth, const uint32 InHeight)
 	// Linear 값을 8비트에 담으면 어두운 영역이 뭉개지고 1을 넘는 값이 잘리므로 씬 컬러는 float로 만든다
 	Desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	SceneColorTarget = RenderCommand::CreateTexture2D(Desc);
+	DBufferTarget = RenderCommand::CreateTexture2D(Desc);
+	// 노멀은 -1~1 부호가 있는 값이라 float 포맷을 그대로 쓴다
+	DBufferNormalTarget = RenderCommand::CreateTexture2D(Desc);
 
 	// Fog 패스가 깊이를 셰이더에서 읽으므로 DSV와 SRV를 둘 다 만들 수 있는 TYPELESS로 만든다
 	Desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
@@ -58,6 +61,8 @@ void FForwardViewTargets::Reset()
 	SceneRenderingInfo = {};
 	RenderingInfo = {};
 	SceneColorTarget.reset();
+	DBufferTarget.reset();
+	DBufferNormalTarget.reset();
 	ColorTarget.reset();
 	DepthTarget.reset();
 	FxaaTarget.reset();

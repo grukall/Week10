@@ -39,10 +39,18 @@ public:
 	// Ambient·Directional은 마지막으로 등록된 것 하나, Point·Spot은 MaxPointLights·MaxSpotLights개까지 담는다.
 	void BuildLightingConstants(FLightingConstants& Out, const TArray<FShadowRequestPerLight>* ShadowRequestsPerLight = nullptr, const TArray<FShadowRequestPerLight>* DirectionalShadowRequests = nullptr) const;
 
+	//===================
+	//Decal
+	void AddDecal(class UDecalComponent* Component);
+	void RemoveDecal(class UDecalComponent* Component);
+	void RemoveAllDecals();
+	void MarkDecalDirty(struct FDeferredDecalSceneProxy* Proxy);
+	// 프록시의 BlendType에 맞는 그리기 목록으로 옮긴다. 이미 맞는 목록에 있으면 그대로 둔다.
+	void PlaceDecalByBlendType(struct FDeferredDecalSceneProxy* Proxy);
+	//===================
+
 	void UpdateAllTransforms();
-
 	void BuildBVH();
-
 	void MarkDirty(FPrimitiveSceneProxy* Proxy);
 	void MarkRenderStateDirty(FPrimitiveSceneProxy* Proxy);
 
@@ -50,6 +58,8 @@ public:
 	// 가져가지 않는 프레임에도 쌓이므로 상한을 넘으면 "전부 무효"로 접는다.
 	void AddShadowInvalidation(const FAABB& Bounds);
 	void InvalidateAllShadows();
+	// 바운드와 겹치는 데칼의 잘라 낸 메시를 다시 만들게 한다. 물체가 떠난 자리와 새 자리 모두 부른다.
+	void InvalidateDecalMeshes(const FAABB& Bounds);
 	void ConsumeShadowInvalidations(TArray<FAABB>& OutBounds, bool& bOutAll);
 
 	void BuildStructuredLight(TArray<FPointLightInfo>& OutPointLight, TArray<FSpotLightInfo>& OutSpotLight, TArray<FCullingLight>& OutCullingLights, const FMatrix& ViewMatrix, const TArray<FShadowRequestPerLight>* ShadowRequestsPerLight = nullptr) const;
@@ -66,6 +76,13 @@ public:
 	TArray<FLightSceneProxy*> DirtyLights;
 	// 프록시에 담긴 라이트 색이 어느 작업 흐름으로 계산됐는지. ColorWorkflow::bLinear와 다르면 전부 다시 계산한다.
 	bool bLightColorsLinear = true;
+
+	// 전체 목록. Mesh 방식 빌드와 무효화는 그리는 방식과 상관없이 모든 데칼을 본다.
+	TArray<FDeferredDecalSceneProxy*> Decals;
+	// 그리기 목록. Albedo는 조명 전 DBuffer에, Emissive는 조명 뒤 씬 컬러에 더해 그린다.
+	TArray<FDeferredDecalSceneProxy*> AlbedoDecals;
+	TArray<FDeferredDecalSceneProxy*> EmissiveDecals;
+	TArray<FDeferredDecalSceneProxy*> DirtyDecals;
 
 	// 컬링 결과로 프록시를 바로 내보내 컴포넌트를 역참조하지 않는다. 경계는 Build/Refit 때만 계산한다.
 	TBVH<FPrimitiveSceneProxy*> BVH{

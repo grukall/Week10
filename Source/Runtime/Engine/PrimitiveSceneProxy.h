@@ -28,6 +28,7 @@ public:
     UStaticMesh* GetMesh() const { return Mesh; }
     bool CastsShadow() const { return bCastShadow; }
     bool ReceivesShadow() const { return bReceiveShadow; }
+	bool ReceivesDecal() const { return bReceiveDecal; }
     bool IsVisible() const { return bVisible; }
     uint8 GetLODCount() const { return RenderState ? RenderState->LODCount : 1; }
     const FMeshRenderState* GetRenderState() const { return RenderState.get(); }
@@ -52,4 +53,5 @@ private:
     bool bVisible = true;
     bool bCastShadow = true;
     bool bReceiveShadow = true;
+    bool bReceiveDecal = true;
 };

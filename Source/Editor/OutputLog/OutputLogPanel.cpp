@@ -206,7 +206,7 @@ void FOutputLogPanel::ExecCommand(const FString& CommandLine)
 		FLog::Log(ELogVerbosity::Info, "Commands:");
 		for (const FString& Command : Commands)
 			FLog::Log(ELogVerbosity::Info, "- {}", Command);
-		OnLog(ELogVerbosity::Info, "- STAT <fps|memory|all|none>");
+		OnLog(ELogVerbosity::Info, "- STAT <fps|memory|profile|decal|all|none>");
 		OnLog(ELogVerbosity::Info, "- ShadowCascadeDebug <0|1> (no argument: current value)");
 	}
 	else if (EqualsIgnoreCase(CommandLine, "HISTORY"))

@@ -1,6 +1,8 @@
 ﻿#include "EnginePCH.h"
 #include "Scene.h"
 #include "LightSceneProxy.h"
+#include "Render/DeferredDecalSceneProxy.h"
+#include "Component/DecalComponent.h"
 #include "Render/ColorWorkflow.h"
 #include "Render/ShadowFrameData.h"
 
@@ -63,6 +65,7 @@ void FScene::RemovePrimitive(UPrimitiveComponent* Component)
 
 	// 사라진 Caster의 그림자가 캐시에 남지 않게 한다.
 	AddShadowInvalidation(Proxy->GetBounds());
+	InvalidateDecalMeshes(Proxy->GetBounds());
 	Component->SceneProxy = nullptr;
 	delete Proxy;
 
@@ -86,6 +89,9 @@ void FScene::RemoveAllPrimitives()
 	BVH.Clear();
 	bElementListChanged = true;
 	InvalidateAllShadows();
+	// 지운 물체의 삼각형이 데칼 메시에 남지 않게 모두 다시 만든다
+	for (FDeferredDecalSceneProxy* Decal : Decals)
+		Decal->bMeshDirty = true;
 }
 
 void FScene::AddFogInfo(uint32 Id, const FFogInfo& FogInfo)
@@ -220,14 +226,85 @@ void FScene::BuildLightingConstants(FLightingConstants& Out, const TArray<FShado
 	}
 }
 
+void FScene::AddDecal(UDecalComponent* Component)
+{
+	if (!Component || Component->SceneProxy) return;
+
+	FDeferredDecalSceneProxy* Proxy = Component->CreateSceneProxy();
+	if (!Proxy) return;
+
+	Proxy->Scene = this;
+	Component->SceneProxy = Proxy;
+
+	Proxy->UpdateFromComponent();
+	Decals.Add(Proxy);
+	PlaceDecalByBlendType(Proxy);
+}
+
+void FScene::PlaceDecalByBlendType(FDeferredDecalSceneProxy* Proxy)
+{
+	const bool bEmissive = Proxy->BlendType == EDecalBlendType::Emissive;
+	TArray<FDeferredDecalSceneProxy*>& Target = bEmissive ? EmissiveDecals : AlbedoDecals;
+	TArray<FDeferredDecalSceneProxy*>& Other = bEmissive ? AlbedoDecals : EmissiveDecals;
+
+	const int32 OtherIndex = Other.Find(Proxy);
+	if (OtherIndex != INDEX_NONE) Other.RemoveAt(OtherIndex);
+	if (Target.Find(Proxy) == INDEX_NONE) Target.Add(Proxy);
+}
+
+void FScene::RemoveDecal(UDecalComponent *Component)
+{
+	if (!Component || !Component->SceneProxy) return;
+
+	FDeferredDecalSceneProxy* Proxy = Component->SceneProxy;
+
+	const int32 Index = Decals.Find(Proxy);
+
+	if (Index != INDEX_NONE) Decals.RemoveAt(Index);
+	TArray<FDeferredDecalSceneProxy*>& DrawList = Proxy->BlendType == EDecalBlendType::Emissive ? EmissiveDecals : AlbedoDecals;
+	const int32 DrawIndex = DrawList.Find(Proxy);
+	if (DrawIndex != INDEX_NONE) DrawList.RemoveAt(DrawIndex);
+	if (Proxy->bQueuedForUpdate)
+	{
+		const int32 Found = DirtyDecals.Find(Proxy);
+		if (Found != INDEX_NONE) DirtyDecals.RemoveAtSwap(Found);
+	}
+
+	Component->SceneProxy = nullptr;
+	delete Proxy;
+}
+
+void FScene::RemoveAllDecals()
+{
+	for (FDeferredDecalSceneProxy* Proxy : Decals)
+	{
+		Proxy->GetComponent()->SceneProxy = nullptr;
+		delete Proxy;
+	}
+
+	Decals.Reset();
+	AlbedoDecals.Reset();
+	EmissiveDecals.Reset();
+	DirtyDecals.Reset();
+}
+
+void FScene::MarkDecalDirty(FDeferredDecalSceneProxy * Proxy)
+{
+	if (Proxy->bQueuedForUpdate) return;
+	Proxy->bQueuedForUpdate = true;
+	DirtyDecals.Add(Proxy);
+}
+
 void FScene::UpdateAllTransforms()
 {
 	for (FPrimitiveSceneProxy* Proxy : RenderStateDirtyProxies)
 	{
 		// 메시·Material·CastShadow·가시성 변경은 그 자리의 그림자를 바꾼다.
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		Proxy->UpdateRenderState();
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		Proxy->bRenderStateQueued = false;
 	}
 	RenderStateDirtyProxies.Reset();
@@ -236,8 +313,10 @@ void FScene::UpdateAllTransforms()
 	{
 		// 떠난 자리와 새 자리 모두 그림자가 바뀐다.
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		Proxy->UpdateTransform();
 		AddShadowInvalidation(Proxy->GetBounds());
+		InvalidateDecalMeshes(Proxy->GetBounds());
 		PrimitiveBounds[Proxy->PackedIndex] = Proxy->GetBounds();
 		PrimitiveFlags[Proxy->PackedIndex] = Proxy->GetComponent()->IsVisible() ? 1 : 0;
 		Proxy->bQueuedForUpdate = false;
@@ -256,6 +335,15 @@ void FScene::UpdateAllTransforms()
 		Proxy->bQueuedForUpdate = false;
 	}
 	DirtyLights.Reset();
+
+	for (FDeferredDecalSceneProxy* Proxy : DirtyDecals)
+	{
+		Proxy->UpdateFromComponent();
+		// 에디터에서 BlendType을 바꿨으면 그리기 목록을 옮긴다
+		PlaceDecalByBlendType(Proxy);
+		Proxy->bQueuedForUpdate = false;
+	}
+	DirtyDecals.Reset();
 
 	//const int32 Count = Proxies.Num();
 	//for (int32 i = 0; i < Count; ++i)
@@ -335,6 +423,17 @@ void FScene::InvalidateAllShadows()
 {
 	bShadowInvalidateAll = true;
 	ShadowInvalidationBounds.Reset();
+}
+
+void FScene::InvalidateDecalMeshes(const FAABB& Bounds)
+{
+	// 새로 추가된 프록시의 초기 바운드(원점, 크기 0)는 어느 데칼에도 들어간 적이 없다.
+	if (Bounds.Extent.X <= 0.0f && Bounds.Extent.Y <= 0.0f && Bounds.Extent.Z <= 0.0f) return;
+	for (FDeferredDecalSceneProxy* Decal : Decals)
+	{
+		if (IntersectsAABB(Bounds, Decal->Bounds))
+			Decal->bMeshDirty = true;
+	}
 }
 
 void FScene::ConsumeShadowInvalidations(TArray<FAABB>& OutBounds, bool& bOutAll)

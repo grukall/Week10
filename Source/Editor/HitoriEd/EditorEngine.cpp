@@ -34,6 +34,7 @@
 #include "Component/SpotLightComponent.h"
 #include "Component/DirectionalLightComponent.h"
 #include "Component/ShapeComponent.h"
+#include "Component/DecalComponent.h"
 #include "Core/ResourcePaths.h"
 #include "Core/ProjectSettings.h"
 #include "Serialization/JsonArchive.h"
@@ -778,37 +779,43 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 	if ((bShowEditorOverlay || bShowSkeletalPreviewOverlay) && !Settings.bDepthView)
 	{
 		LineBatcher->BeginFrame();
-
-		if (bShowEditorOverlay)
+		if (Settings.bDrawBoundingBox)
 		{
-			if (Settings.bDrawBoundingBox)
+			LineBatcher->BuildVertexBuffer(ViewWorld);
+		}
+		for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
+		{
+			if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
 			{
-				LineBatcher->BuildVertexBuffer(ViewWorld);
-			}
-			for (TObjectIterator<UDirectionalLightComponent> DirLight; DirLight; ++DirLight)
-			{
-				if (DirLight && DirLight->GetOwner() && DirLight->GetOwner()->GetWorld() == &ViewWorld)
-				{
-					DirLight->DrawDebug(LineBatcher.get());
-				}
-			}
-			for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
-			{
-				if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
-				{
-					SpotLight->DrawDebug(LineBatcher.get());
-				}
-			}
-			AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
-			for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
-			{
-				if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
-					continue;
-				if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
-					continue;
-				Shape->DrawDebug(LineBatcher.get());
+				DirLight->DrawDebug(LineBatcher.get());
 			}
 		}
+		for (TObjectIterator<USpotLightComponent> SpotLight; SpotLight; ++SpotLight)
+		{
+			if (SpotLight && SpotLight->GetOwner() && SpotLight->GetOwner()->GetWorld() == &ViewWorld)
+			{
+				SpotLight->DrawDebug(LineBatcher.get());
+			}
+		}
+		AActor* SelectedActor = OutlinerPanel ? OutlinerPanel->GetSelectedActor() : nullptr;
+		for (TObjectIterator<UShapeComponent> Shape; Shape; ++Shape)
+		{
+			if (!Shape || !Shape->GetOwner() || Shape->GetOwner()->GetWorld() != &ViewWorld)
+				continue;
+			if (Shape->ShouldDrawOnlyIfSelected() && Shape->GetOwner() != SelectedActor)
+				continue;
+			Shape->DrawDebug(LineBatcher.get());
+		}
+
+		for (TObjectIterator<UDecalComponent> Decal; Decal; ++Decal)
+		{
+			if (!Decal || !Decal->GetOwner() || Decal->GetOwner()->GetWorld() != &ViewWorld)
+				continue;
+
+			Decal->DrawDebug(LineBatcher.get());
+		}
+
+
 
 		if (bShowSkeletalPreviewOverlay)
 		{
@@ -1005,6 +1012,8 @@ FSceneRenderSettings UEditorEngine::MakeSceneRenderSettings() const
     Out.bVisualizeTileLightCount = Settings.bVisualizeTileLightCount;
     Out.ShowFlags.SkeletalMeshes = Settings.bDrawSkeletalMeshes;
     Out.ShowFlags.Fog = Settings.bExponentialHeightFog;
+    Out.ShowFlags.Decal = Settings.bDecal;
+    Out.DecalMethod = Settings.bDecalMeshMethod ? EDecalMethod::Mesh : EDecalMethod::Depth;
     Out.ShowFlags.AntiAliasing = Settings.bEnableFXAA;
     Out.ShowFlags.Tonemapper = Settings.bToneMapping;
 	Out.ShowFlags.GammaCorrection = Settings.bGammaCorrection;

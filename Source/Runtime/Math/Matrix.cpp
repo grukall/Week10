@@ -45,6 +45,21 @@ FMatrix FMatrix::ApplyScale(float Scale) const
 	);
 }
 
+FMatrix FMatrix::ApplyScale(const FVector& Scale) const
+{
+	return FMatrix(
+		FVector4(M[0][0] * Scale.X, M[0][1], M[0][2], M[0][3]),
+		FVector4(M[1][0], M[1][1] * Scale.Y, M[1][2], M[1][3]),
+		FVector4(M[2][0], M[2][1], M[2][2] * Scale.Z, M[2][3]),
+		FVector4(M[3][0], M[3][1], M[3][2], M[3][3])
+	);
+}
+
+FVector FMatrix::GetScale() const
+{
+	return FVector(M[0][0], M[1][1], M[2][2]);
+}
+
 FVector4 FMatrix::GetOrigin()
 {
 	return FVector4(M[3][0], M[3][1], M[3][2], M[3][3]);
@@ -74,6 +89,11 @@ FVector4 FMatrix::InverseTransformPosition(const FVector& V) const
 FVector4 FMatrix::GetColumn(int32 i) const
 {
 	return FVector4(M[0][i], M[1][i], M[2][i], M[3][i]);
+}
+
+FVector4 FMatrix::GetRow(int32 i) const
+{
+	return FVector4(M[i][0], M[i][1], M[i][2], M[i][3]);
 }
 
 void FMatrix::SetColumn(int32 i, FVector4 Value)
