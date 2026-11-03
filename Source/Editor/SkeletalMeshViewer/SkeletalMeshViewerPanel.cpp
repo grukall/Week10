@@ -14,6 +14,8 @@
 #include "Render/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
 #include "Component/SkeletalMeshComponent.h"
+#include "Asset/FbxImporter/FbxImporter.h"
+#include "Editor/HitoriEd/EditorFileUtils.h"
 
 namespace
 {
@@ -106,7 +108,10 @@ bool FSkeletalMeshViewerPanel::Init()
 void FSkeletalMeshViewerPanel::Tick(float DeltaTime)
 {
 	if (bFitCameraPending)
+	{
 		FitCameraToMesh();
+	}
+	
 	if (bPoseDirty)
 	{
 		RefreshSkeletalPreviewMesh();
@@ -206,25 +211,6 @@ void FSkeletalMeshViewerPanel::OnRender()
 				RefreshSkeletalPreviewMesh();
 			}
 
-			if (ImGui::Button("Reset Bone"))
-			{
-				EditableLocalPose[SelectedBoneIndex] = MatrixToTransform(SelectedBone.RefLocalMatrix);
-				LocalPoseMatrices[SelectedBoneIndex] = SelectedBone.RefLocalMatrix;
-				bPoseDirty = true;
-				RefreshSkeletalPreviewMesh();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Reset All"))
-			{
-				for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
-				{
-					EditableLocalPose[BoneIndex] = MatrixToTransform(SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix);
-					LocalPoseMatrices[BoneIndex] = SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix;
-				}
-				bPoseDirty = true;
-				RefreshSkeletalPreviewMesh();
-			}
-			
 			if (GlobalPose.IsValidIndex(SelectedBoneIndex))
 			{
 				const FMatrix& GlobalMatrix = GlobalPose[SelectedBoneIndex];
@@ -232,11 +218,37 @@ void FSkeletalMeshViewerPanel::OnRender()
 				ImGui::TextDisabled("Global Location");
 				ImGui::Text("X %.2f  Y %.2f  Z %.2f", GlobalMatrix[3][0], GlobalMatrix[3][1], GlobalMatrix[3][2]);
 			}
+
+			ImGui::Separator();
+			if (ImGui::Button("Reset Bone"))
+			{
+				EditableLocalPose[SelectedBoneIndex] = MatrixToTransform(SelectedBone.RefLocalMatrix);
+				LocalPoseMatrices[SelectedBoneIndex] = SelectedBone.RefLocalMatrix;
+				bPoseDirty = true;
+				RefreshSkeletalPreviewMesh();
+			}
+		}
+
+		ImGui::Separator();
+		if (ImGui::Button("Reset All"))
+		{
+			for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
+			{
+				EditableLocalPose[BoneIndex] = MatrixToTransform(SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix);
+				LocalPoseMatrices[BoneIndex] = SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix;
+			}
+			bPoseDirty = true;
+			RefreshSkeletalPreviewMesh();
+		}
+		if (ImGui::Button("Export"))
+		{
+			ExportReboundFbx();
 		}
 
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("Preview Viewport");
 		ImGui::Separator();
+
 		ImVec2 PreviewSize = ImGui::GetContentRegionAvail();
 		PreviewSize.x = std::max(0.0f, PreviewSize.x);
 		PreviewSize.y = std::max(0.0f, PreviewSize.y);
@@ -246,13 +258,14 @@ void FSkeletalMeshViewerPanel::OnRender()
 		{
 			SkeletalPreviewViewport->SetOutputSize(PreviewWidth, PreviewHeight);
 			if (bFitCameraPending)
+			{
 				FitCameraToMesh();
+			}
 		}
 		if (SkeletalPreviewViewport && SkeletalPreviewViewport->GetColorTarget() && PreviewWidth > 0 && PreviewHeight > 0)
 		{
 			const ImVec2 PreviewMin = ImGui::GetCursorScreenPos();
 			SkeletalPreviewScreenRect = { PreviewMin.x, PreviewMin.y, PreviewSize.x, PreviewSize.y };
-
 			ImGui::Image((ImTextureID)SkeletalPreviewViewport->GetColorTarget()->GetSRV(), PreviewSize);
 		}
 		else
@@ -288,7 +301,9 @@ void FSkeletalMeshViewerPanel::BuildBoneHierarchy()
 void FSkeletalMeshViewerPanel::DrawBoneNode(int32 BoneIndex)
 {
 	if (!SkeletalMesh->MeshData.RefBones.IsValidIndex(BoneIndex))
+	{
 		return;
+	}
 	const FSkeletalMeshRefBone& Bone = SkeletalMesh->MeshData.RefBones[BoneIndex];
 	const bool bHasChildren = !BoneChildren[BoneIndex].IsEmpty();
 
@@ -521,7 +536,6 @@ void FSkeletalMeshViewerPanel::RebuildGlobalPose()
 		{
 			GlobalPose[BoneIndex] = LocalMatrix;
 		}
-
 	}
 
 	SkeletalPreviewComponent->SetSkeletalMeshPose(LocalPoseMatrices);
@@ -536,7 +550,7 @@ void FSkeletalMeshViewerPanel::DrawBoneDebug(FLineBatcher& LineBatcher) const
 		return;
 	}
 
-	constexpr float BoneRadius = 0.05f;
+	constexpr float BoneRadius = 0.03f;
 	constexpr int32 SphereSegments = 16;
 
 	for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
@@ -640,15 +654,21 @@ void FSkeletalMeshViewerPanel::SetBoneLocalTransform(int32 BoneIndex, const FTra
 	{
 		return;
 	}
+
 	const FTransform& Previous = EditableLocalPose[BoneIndex];
 	const bool bOnlyTranslation = Transform.Rotation.Pitch == Previous.Rotation.Pitch
 		&& Transform.Rotation.Yaw == Previous.Rotation.Yaw
 		&& Transform.Rotation.Roll == Previous.Rotation.Roll
 		&& Transform.Scale == Previous.Scale;
+
 	if (bOnlyTranslation)
+	{
 		LocalPoseMatrices[BoneIndex].SetOrigin(Transform.Location);
+	}
 	else
+	{
 		LocalPoseMatrices[BoneIndex] = Transform.GetLocalMatrix();
+	}
 	EditableLocalPose[BoneIndex] = Transform;
 	bPoseDirty = true;
 }
@@ -762,20 +782,30 @@ int32 FSkeletalMeshViewerPanel::PickBone(const FVector2& MousePosition, const FM
 void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 {
 	if (BoneGizmo)
+	{
 		BoneGizmo->EndDrag();
+	}
+
 	SkeletalMesh = InSkeletalMesh;
 	if (SkeletalPreviewComponent)
+	{
 		SkeletalPreviewComponent->SetSkeletalMesh(SkeletalMesh);
+	}
+
 	EditableLocalPose.Reset();
 	LocalPoseMatrices.Reset();
 	GlobalPose.Reset();
 	BoneChildren.Reset();
 	RootBones.Reset();
+
 	SelectedBoneIndex = -1;
 	bPoseDirty = false;
 	bFitCameraPending = false;
+
 	if (!SkeletalMesh)
+	{
 		return;
+	}
 
 	for (const FSkeletalMeshRefBone& Bone : SkeletalMesh->MeshData.RefBones)
 	{
@@ -797,21 +827,26 @@ void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 void FSkeletalMeshViewerPanel::FitCameraToMesh()
 {
 	if (!SkeletalMesh || !SkeletalPreviewClient || !SkeletalPreviewViewport || !SkeletalPreviewViewport->IsVisible())
+	{
 		return;
+	}
 
 	const FBox& Bounds = SkeletalMesh->GetMeshData().ReferenceBounds;
 	const FVector Center = (Bounds.Min + Bounds.Max) * 0.5f;
 	const float Radius = std::max((Bounds.Max - Bounds.Min).Size() * 0.5f, 0.1f);
 	const FVector2 Size = SkeletalPreviewViewport->GetOutputSize();
 	FEditorCameraState Camera = SkeletalPreviewClient->GetCamera();
+
 	const float Distance = Radius * 3.0f * std::max(1.0f, Size.Y / Size.X);
 	Camera.Location = Center + FVector(-1.0f, 0.0f, 0.3f).GetSafeNormal() * Distance;
 	Camera.Rotation = FRotator::FindLookAtRotation(Camera.Location, Center).Quaternion();
+
 	SkeletalPreviewClient->SetCamera(Camera, Size);
 	bFitCameraPending = false;
 	if (SkeletalPreviewFloor)
-		SkeletalPreviewFloor->GetRootComponent()->SetRelativeLocation(
-			FVector(Center.X, Center.Y, Bounds.Min.Z - Radius * 0.02f));
+	{
+		SkeletalPreviewFloor->GetRootComponent()->SetRelativeLocation(FVector(Center.X, Center.Y, Bounds.Min.Z - Radius * 0.02f));
+	}
 }
 
 void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh()
@@ -820,6 +855,52 @@ void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh()
 	{
 		RebuildGlobalPose();
 	}
+
 	if (SkeletalPreviewComponent)
+	{
 		SkeletalPreviewComponent->RefreshMesh();
+	}
+}
+
+void FSkeletalMeshViewerPanel::ExportReboundFbx()
+{
+	if (!SkeletalMesh ||
+		LocalPoseMatrices.Num() != SkeletalMesh->MeshData.RefBones.Num())
+	{
+		return;
+	}
+	FString SourceKey = SkeletalMesh->GetPath();
+	const size_t GroupPosition = SourceKey.rfind("#Group");
+	if (GroupPosition == FString::npos)
+	{
+		HTR_LOG(Error, "[FBX Export] Invalid asset key: {}", SourceKey);
+		return;
+	}
+	SourceKey.resize(GroupPosition);
+	const FString SourcePath =
+		(std::filesystem::path("Assets") / SourceKey).generic_string();
+	const FString DestinationPath =
+		FEditorFileUtils::OpenFbxSaveDialog(SourcePath);
+	if (DestinationPath.empty())
+	{
+		return;
+	}
+	std::error_code Error;
+	const bool bSameFile = std::filesystem::equivalent(
+		SourcePath, DestinationPath, Error);
+	if (!Error && bSameFile)
+	{
+		HTR_LOG(Error, "[FBX Export] Source file cannot be overwritten.");
+		return;
+	}
+	if (!FFbxImporter::ExportReboundFbx(
+		SourcePath,
+		DestinationPath,
+		SkeletalMesh->MeshData,
+		LocalPoseMatrices))
+	{
+		HTR_LOG(Error, "[FBX Export] Failed: {}", DestinationPath);
+		return;
+	}
+	HTR_LOG(Info, "[FBX Export] Saved: {}", DestinationPath);
 }

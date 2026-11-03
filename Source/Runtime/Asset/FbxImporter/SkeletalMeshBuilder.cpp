@@ -67,6 +67,7 @@ namespace
 
             FSkeletalMeshRefBone Bone;
             Bone.Name = FName(Imported.Name);
+			Bone.SourceNodePath = Imported.SourceNodePath;
             Bone.ParentIndex = Imported.ParentIndex;
 
             if (!InvertMatrix(Imported.RefGlobalMatrix, Bone.InverseBindMatrix))
