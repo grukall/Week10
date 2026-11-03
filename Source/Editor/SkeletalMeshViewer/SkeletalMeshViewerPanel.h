@@ -25,7 +25,6 @@ public:
 	void OnRender() override;
 	void DrawBoneDebug(FLineBatcher& LineBatcher) const;
 	FVector GetBoneGlobalPosition(int32 BoneIndex) const;
-	void RebuildGlobalPose();
 
 	const char* GetPanelName() const override { return "SkeletalMesh Viewer"; }
 
@@ -57,6 +56,7 @@ public:
 	void RefreshSkeletalPreviewMesh();
 
 private:
+	const TArray<FMatrix>& GetGlobalPose() const;
 	void BuildBoneHierarchy();
 	void DrawBoneNode(int32 BoneIndex);
 	void CreateDefaultSkeletalPreviewScene();
@@ -72,7 +72,6 @@ private:
 	TArray<FTransform> EditableLocalPose; // 수정할 현재 자세
 	// 편집하지 않은 본은 임포트된 행렬을 그대로 보존한다.
 	TArray<FMatrix> LocalPoseMatrices;
-	TArray<FMatrix> GlobalPose;
 	int32 SelectedBoneIndex = -1;         // 현재 선택된 BoneIndex
 	bool bPoseDirty = false;
 	bool bFitCameraPending = false;
