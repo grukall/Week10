@@ -24,6 +24,8 @@ public:
 	// VS를 찾지 못하면 Windows 기본 연결 프로그램으로 연다. 파일이 없으면 false.
 	static bool OpenScriptInEditor(const FString& ScriptPath);
 
+	static FString OpenFbxSaveDialog(const FString& SourcePath);
+
 private:
 	static FString OpenSaveSceneDialog();
 	static FString OpenLoadSceneDialog();

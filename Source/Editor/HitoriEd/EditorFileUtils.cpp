@@ -18,12 +18,17 @@ namespace
 		bool bSave = false;                  // 저장 대화상자 (덮어쓰기 확인)
 		bool bOwnedByActiveWindow = false;   // 활성 창을 부모로 두어 그 위에 뜨게 한다
 		bool bProjectRelative = false;       // 작업 디렉터리(저장소 루트) 기준 상대 경로로 돌려준다
+		FString InitialFileName;
 	};
 
 	// Windows 열기·저장 대화상자. 취소하면 빈 문자열
 	FString ShowFileDialog(const FFileDialogOptions& Options)
 	{
 		char FilePath[MAX_PATH] = {};
+		if (!Options.InitialFileName.empty())
+		{
+			strcpy_s(FilePath, Options.InitialFileName.c_str());
+		}
 
 		OPENFILENAMEA ofn = {};
 		ofn.lStructSize = sizeof(OPENFILENAMEA);
@@ -397,6 +402,21 @@ bool FEditorFileUtils::OpenScriptInEditor(const FString& ScriptPath)
 	// VS를 못 찾으면 .lua에 연결된 기본 프로그램으로 연다
 	const HINSTANCE Result = ShellExecuteW(nullptr, L"open", FilePath.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 	return reinterpret_cast<INT_PTR>(Result) > 32;
+}
+
+FString FEditorFileUtils::OpenFbxSaveDialog(const FString& SourcePath)
+{
+	const std::filesystem::path Source(SourcePath);
+
+	FFileDialogOptions Options;
+	Options.Filter = "FBX Files (*.fbx)\0*.fbx\0";
+	Options.DefaultExt = "fbx";
+	Options.InitialDir = std::filesystem::absolute(Source.parent_path()).string();
+	Options.InitialFileName = Source.stem().string() + "_Rebound.fbx";
+	Options.bSave = true;
+	Options.bOwnedByActiveWindow = true;
+
+	return ShowFileDialog(Options);
 }
 
 

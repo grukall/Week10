@@ -3,6 +3,7 @@
 
 #include "SkeletalMeshImportData.h"
 #include "Core/EngineLog.h"
+#include "Render/SkeletalMeshData.h"
 
 #include <fbxsdk.h>
 #include <unordered_map>
@@ -38,29 +39,6 @@ namespace
         return Result;
     }
 
-    // 데이터를 추출하기 전에 장면의 좌표축과 길이 단위를 통일한다.
-    void NormalizeScene(FbxScene* Scene)
-    {
-        // 엔진: +X 앞, +Y 오른쪽, +Z 위, 왼손 좌표계.
-        // FBX의 Front는 화면 밖을 향하므로 엔진 앞 방향과 부호가 반대다.
-        const FbxAxisSystem EngineAxis(
-            FbxAxisSystem::eZAxis,
-            static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),
-            FbxAxisSystem::eLeftHanded
-        );
-
-        const bool bAxisChanged = Scene->GetGlobalSettings().GetAxisSystem() != EngineAxis;
-        const double SourceUnitCm = Scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor();
-
-        if (bAxisChanged)
-            EngineAxis.DeepConvertScene(Scene);
-
-        // 1유닛 = 1m
-        FbxSystemUnit::m.ConvertScene(Scene);
-
-        HTR_LOG(Info, "[FBX Coordinate] AxisChanged={}, UnitCm={} -> {}", bAxisChanged, SourceUnitCm, Scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor());
-    }
-
     // Cluster의 본에서 부모로 올라가 메시 그룹을 식별할 루트를 찾는다.
     FbxNode* FindSkeletonRoot(FbxNode* Link, FbxNode* SceneRoot)
     {
@@ -87,25 +65,6 @@ namespace
         return Root;
     }
 
-    // Scene의 가상 루트는 제외하고 원본 노드의 계층 경로를 만든다.
-    // 예: Armature/Hips/Spine
-    FString BuildSourceNodePath(FbxNode* Node)
-    {
-        FString NodePath;
-
-        while (Node && Node->GetParent())
-        {
-            if (NodePath.empty())
-                NodePath = Node->GetName();
-            else
-                NodePath = FString(Node->GetName()) + "/" + NodePath;
-
-            Node = Node->GetParent();
-        }
-
-        return NodePath;
-    }
-
     // 부모부터 DFS로 수집하므로 부모 본의 배열 번호가 자식보다 앞선다.
     void CollectBones(FbxNode* Node, FSkeletalMeshImportData& OutData, FBoneIndexMap& BoneMap)
     {
@@ -116,7 +75,7 @@ namespace
         {
             FImportedRefBone Bone;
             Bone.Name = Node->GetName();
-            Bone.SourceNodePath = BuildSourceNodePath(Node);
+            Bone.SourceNodePath = FFbxImporter::BuildSourceNodePath(Node);
             Bone.ParentIndex = -1;
 
             FbxNode* ParentNode = Node->GetParent();
@@ -1155,7 +1114,47 @@ namespace
 
         return true;
     }
+}
 
+// 데이터를 추출하기 전에 장면의 좌표축과 길이 단위를 통일한다.
+void FFbxImporter::NormalizeScene(fbxsdk::FbxScene* Scene)
+{
+    // 엔진: +X 앞, +Y 오른쪽, +Z 위, 왼손 좌표계.
+    const FbxAxisSystem EngineAxis(
+        FbxAxisSystem::eZAxis,
+        static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),
+        FbxAxisSystem::eLeftHanded
+    );
+
+    const bool bAxisChanged = Scene->GetGlobalSettings().GetAxisSystem() != EngineAxis;
+    const double SourceUnitCm = Scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor();
+
+    if (bAxisChanged)
+        EngineAxis.DeepConvertScene(Scene);
+
+    // 1유닛 = 1m
+    FbxSystemUnit::m.ConvertScene(Scene);
+    HTR_LOG(Info, "[FBX Coordinate] AxisChanged={}, UnitCm={} -> {}", bAxisChanged, SourceUnitCm, Scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor());
+}
+
+
+// Scene의 가상 루트는 제외하고 원본 노드의 계층 경로를 만든다.
+// 예: Armature/Hips/Spine
+FString FFbxImporter::BuildSourceNodePath(fbxsdk::FbxNode* Node)
+{
+    FString NodePath;
+
+    while (Node && Node->GetParent())
+    {
+        if (NodePath.empty())
+            NodePath = Node->GetName();
+        else
+            NodePath = FString(Node->GetName()) + "/" + NodePath;
+
+        Node = Node->GetParent();
+    }
+
+    return NodePath;
 }
 
 bool FFbxImporter::ResolveTexturePath(const FString& FbxPath, FString& TexturePath)

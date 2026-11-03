@@ -195,13 +195,14 @@ void FLineBatcher::Flush()
 	RenderCommand::Draw(VertexCount, 0);
 }
 
-void FLineBatcher::OnRender(const FMatrix& ViewProjection)
+void FLineBatcher::OnRender(const FMatrix& ViewProjection, EDepthStencilState DepthState)
 {
 	//BuildVertexBuffer();
 
 	FMatrix VP = ViewProjection;
 	RenderCommand::UpdateBufferData(VertexBuffer.get(), VertexBufferBase, sizeof(FVertex) * VertexCount);
 	RenderCommand::UpdateBufferData(CB.get(), &VP, sizeof(FMatrix));
+	PipelineState.DepthStencilState = DepthState;
 
 	Flush();
 }

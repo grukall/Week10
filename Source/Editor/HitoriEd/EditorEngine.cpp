@@ -815,7 +815,8 @@ void UEditorEngine::RenderOverlayPass(FEditorViewportClient* OverlayClient, UWor
 			SkeletalMeshViewerPanel->DrawBoneDebug(*LineBatcher);
 		}
 
-		LineBatcher->OnRender(ViewProjection);
+		LineBatcher->OnRender(ViewProjection, 
+			bShowSkeletalPreviewOverlay ? EDepthStencilState::Disabled : EDepthStencilState::Default);
 	}
 
 

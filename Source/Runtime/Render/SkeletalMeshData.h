@@ -43,6 +43,7 @@ struct FSkeletalMeshRefBone
     // 현재 RefLocalMatrix ~ RootRefLocalMatrix 곱의 역행렬
     // 이 역행렬로 추후에 정점을 정점이 속한 bone의 좌표계로 변환할때 쓸 수 있다
     FMatrix InverseBindMatrix = FMatrix::Identity;
+	FString SourceNodePath; // FBX Importer에서 추출한 원본 노드 경로
 };
 
 // MaterialSlotIndex <-> StartIndex <= index < StartIndex + IndexCount
