@@ -140,7 +140,7 @@ bool UEditorEngine::Init()
 	SkeletalMeshViewerPanel = EditorUI->AddEditorPanel<FSkeletalMeshViewerPanel>();
 	ContentDrawerPanel->SetSkeletalMeshOpenCallback([this](USkeletalMesh* SkeletalMesh)
 	{
-		SkeletalMeshViewerPanel->SetSkeletalMesh(SkeletalMesh);
+		SkeletalMeshViewerPanel->OpenSkeletalMesh(SkeletalMesh);
 		SkeletalMeshViewerPanel->SetOpen(true);
 	});
 

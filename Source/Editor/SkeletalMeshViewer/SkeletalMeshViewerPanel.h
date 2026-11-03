@@ -17,6 +17,23 @@ class ADirectionalLightActor;
 class AAmbientLightActor;
 class FLineBatcher;
 
+struct FSkeletalMeshDocument
+{
+	USkeletalMesh* SkeletalMesh = nullptr;
+
+	TArray<FTransform> EditableLocalPose;
+	TArray<FMatrix> LocalPoseMatrices;
+
+	TArray<TArray<int32>> BoneChildren;
+	TArray<int32> RootBones;
+
+	int32 SelectedBoneIndex = INDEX_NONE;
+
+	bool bPoseDirty = false;
+	bool bModified = false;
+	bool bFitCameraPending = false;
+};
+
 class FSkeletalMeshViewerPanel : public IEditorPanel
 {
 public:
@@ -29,6 +46,7 @@ public:
 	const char* GetPanelName() const override { return "SkeletalMesh Viewer"; }
 
 	bool InitializeSkeletalPreview(UWorld* InSkeletalMeshWorld);
+	void InitializeDocument(FSkeletalMeshDocument& Document, USkeletalMesh* SkeletalMesh);
 	void ShutdownSkeletalPreview();
 	bool CanRenderSkeletalPreview() const;
 
@@ -42,7 +60,7 @@ public:
 	void RouteSkeletalPreviewInput(FViewportInput Input);
 	void ReleaseSkeletalPreviewInput();
 
-	int32 GetSelectedBoneIndex() const { return SelectedBoneIndex; }
+	int32 GetSelectedBoneIndex() const;
 	bool IsBoneValid(int32 BoneIndex) const;
 	int32 GetBoneParentIndex(int32 BoneIndex) const;
 	FTransform GetBoneLocalTransform(int32 BoneIndex) const;
@@ -55,9 +73,16 @@ public:
 	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
 	void RefreshSkeletalPreviewMesh(int32 BoneIndex = INDEX_NONE);
 
+	FSkeletalMeshDocument* GetActiveDocument();
+	const FSkeletalMeshDocument* GetActiveDocument() const;
+
+	void OpenSkeletalMesh(USkeletalMesh* SkeletalMesh);
+	void ActivateDocument(int32 DocumentIndex);
+	void CloseDocument(int32 Index);
+
 private:
 	const TArray<FMatrix>& GetGlobalPose() const;
-	void BuildBoneHierarchy();
+	void BuildBoneHierarchy(FSkeletalMeshDocument& Document);
 	void DrawBoneNode(int32 BoneIndex);
 	void CreateDefaultSkeletalPreviewScene();
 
@@ -68,19 +93,8 @@ private:
 	void ExportReboundFbx();
 
 private:
-	USkeletalMesh* SkeletalMesh = nullptr;
 	AActor* SkeletalPreviewActor = nullptr;
 	USkeletalMeshComponent* SkeletalPreviewComponent = nullptr;
-
-	TArray<FTransform> EditableLocalPose; // 수정할 현재 자세
-	// 편집하지 않은 본은 임포트된 행렬을 그대로 보존한다.
-	TArray<FMatrix> LocalPoseMatrices;
-	int32 SelectedBoneIndex = -1;         // 현재 선택된 BoneIndex
-	bool bPoseDirty = false;
-	bool bFitCameraPending = false;
-
-	TArray<TArray<int32>> BoneChildren;
-	TArray<int32> RootBones;
 
 	TUniquePtr<FViewport> SkeletalPreviewViewport;
 	FEditorViewportClient* SkeletalPreviewClient = nullptr;
@@ -95,4 +109,7 @@ private:
 
 	TUniquePtr<FGizmo> BoneGizmo;
 	TUniquePtr<FBoneGizmoTarget> BoneGizmoTarget;
+
+	TArray<FSkeletalMeshDocument> Documents;
+	int32 ActiveDocumentIndex = INDEX_NONE;
 };
