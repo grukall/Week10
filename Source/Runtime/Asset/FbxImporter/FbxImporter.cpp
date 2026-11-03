@@ -44,9 +44,9 @@ namespace
         // 엔진: +X 앞, +Y 오른쪽, +Z 위, 왼손 좌표계.
         // FBX의 Front는 화면 밖을 향하므로 엔진 앞 방향과 부호가 반대다.
         const FbxAxisSystem EngineAxis(
-            FbxAxisSystem::eZAxis,
-            static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),
-            FbxAxisSystem::eLeftHanded
+            FbxAxisSystem::eZAxis,      // Up: +Z 방향
+            static_cast<FbxAxisSystem::EFrontVector>(-FbxAxisSystem::eParityEven),  // Front: -X 방향
+            FbxAxisSystem::eLeftHanded  // 나머지: 왼손 좌표계
         );
 
         const bool bAxisChanged = Scene->GetGlobalSettings().GetAxisSystem() != EngineAxis;
@@ -220,7 +220,7 @@ namespace
     }
 
     // 재질 속성에 직접 연결된 파일 텍스처의 경로를 읽는다. 이미지 로딩은 AssetManager에서 한다.
-    FString ExtractTexturePath(FbxSurfaceMaterial* SourceMaterial, const char* PropertyName)
+    FString ExtractTexturePath(FbxSurfaceMaterial* SourceMaterial, const char* PropertyName, FString& OutUVSetName)
     {
         FbxProperty Property = SourceMaterial->FindProperty(PropertyName);
         if (!Property.IsValid())
@@ -236,18 +236,25 @@ namespace
 
             const char* RelativePath = Texture->GetRelativeFileName();
             if (RelativePath && RelativePath[0] != '\0')
+            {
+                OutUVSetName = Texture->UVSet.Get().Buffer();
                 return FString(RelativePath);
+            }
 
             const char* AbsolutePath = Texture->GetFileName();
             if (AbsolutePath && AbsolutePath[0] != '\0')
+            {
+                OutUVSetName = Texture->UVSet.Get().Buffer();
                 return FString(AbsolutePath);
+            }
         }
 
         return {};
     }
 
     // Lambert/Phong 재질의 기본 속성과 텍스처 경로를 엔진 자료형에 복사한다.
-    void ExtractMaterialProperties(FbxSurfaceMaterial* SourceMaterial, FImportedMaterial& OutMaterial)
+    void ExtractMaterialProperties(FbxSurfaceMaterial* SourceMaterial, FImportedMaterial& OutMaterial,
+        FString& OutDiffuseUVSetName, FString& OutNormalUVSetName)
     {
         if (!SourceMaterial)
             return;
@@ -272,8 +279,8 @@ namespace
             OutMaterial.Shininess = static_cast<float>(Phong->Shininess.Get());
         }
 
-        OutMaterial.DiffuseTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sDiffuse);
-        OutMaterial.NormalTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sNormalMap);
+        OutMaterial.DiffuseTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sDiffuse, OutDiffuseUVSetName);
+        OutMaterial.NormalTexturePath = ExtractTexturePath(SourceMaterial, FbxSurfaceMaterial::sNormalMap, OutNormalUVSetName);
 
     }
 
@@ -355,8 +362,29 @@ namespace
             ImportedMesh.Points.Add(Position);
         }
 
-        // 2. Node의 재질 번호 → 그룹 전체 Materials 번호
+        FbxStringList UVSetNames;
+        Mesh->GetUVSetNames(UVSetNames);
+        const char* DefaultUVSetName = UVSetNames.GetCount() > 0 ? UVSetNames.GetStringAt(0) : nullptr;
+
+        const auto ResolveUVSetName = [&](const FString& RequestedName, const FString& MaterialName) -> const char*
+        {
+            for (int32 UVIndex = 0; UVIndex < UVSetNames.GetCount(); ++UVIndex)
+            {
+                if (RequestedName == UVSetNames.GetStringAt(UVIndex))
+                    return UVSetNames.GetStringAt(UVIndex);
+            }
+
+            if (RequestedName.empty() || RequestedName == "default")
+                return DefaultUVSetName;
+
+            HTR_LOG(Warning, "[FBX UV] UV set not found: Mesh={}, Material={}, UVSet={}",
+                ImportedMesh.Name, MaterialName, RequestedName);
+            return nullptr;
+        };
+
+        // 2. Node의 재질 번호 → 그룹 전체 Materials 번호와 사용할 UV 세트
         TArray<int32> MaterialMap;
+        TArray<const char*> MaterialUVSetNames;
 
         for (int32 MaterialIndex = 0; MaterialIndex < Node->GetMaterialCount(); ++MaterialIndex)
         {
@@ -365,23 +393,39 @@ namespace
             if (!SourceMaterial)
             {
                 MaterialMap.Add(-1);
+                MaterialUVSetNames.Add(DefaultUVSetName);
                 continue;
             }
 
             FImportedMaterial Material;
-            ExtractMaterialProperties(SourceMaterial, Material);
+            FString DiffuseUVSetName;
+            FString NormalUVSetName;
+            ExtractMaterialProperties(SourceMaterial, Material, DiffuseUVSetName, NormalUVSetName);
+
+            const char* UVSetName = DefaultUVSetName;
+            if (!Material.DiffuseTexturePath.empty())
+                UVSetName = ResolveUVSetName(DiffuseUVSetName, Material.Name);
+            else if (!Material.NormalTexturePath.empty())
+                UVSetName = ResolveUVSetName(NormalUVSetName, Material.Name);
+
+            if (!Material.DiffuseTexturePath.empty() && !Material.NormalTexturePath.empty())
+            {
+                const char* NormalUVSet = ResolveUVSetName(NormalUVSetName, Material.Name);
+                if (UVSetName && NormalUVSet && FString(UVSetName) != NormalUVSet)
+                {
+                    HTR_LOG(Warning, "[FBX UV] Different diffuse/normal UV sets are unsupported: Mesh={}, Material={}, Diffuse={}, Normal={}",
+                        ImportedMesh.Name, Material.Name, UVSetName, NormalUVSet);
+                }
+            }
 
             MaterialMap.Add(OutData.Materials.Num());
+            MaterialUVSetNames.Add(UVSetName);
             OutData.Materials.Add(Material);
         }
 
         FbxGeometryElementMaterial* MaterialElement = Mesh->GetElementMaterial(0);
 
-        // 3. 첫 번째 UV 세트를 UV0로 사용
-        FbxStringList UVSetNames;
-        Mesh->GetUVSetNames(UVSetNames);
-
-        const char* UVSetName = UVSetNames.GetCount() > 0 ? UVSetNames.GetStringAt(0) : nullptr;
+        // 3. 꼭짓점 속성 데이터 준비
         int32 NormalWedgeCount = 0;
 
         const FbxGeometryElementTangent* TangentElement = Mesh->GetElementTangent(0);
@@ -422,10 +466,15 @@ namespace
                     LocalMaterialIndex = MaterialIndices.GetAt(MappingIndex);
             }
 
+            const char* UVSetName = DefaultUVSetName;
             if (LocalMaterialIndex >= 0 && LocalMaterialIndex < MaterialMap.Num())
             {
                 Polygon.MaterialSlotIndex = MaterialMap[LocalMaterialIndex];
+                UVSetName = MaterialUVSetNames[LocalMaterialIndex];
             }
+
+            // UV 세트가 달라지면 Build에서 선택한 UV로 탄젠트를 다시 계산한다.
+            const bool bUseSourceTangents = UVSetName && DefaultUVSetName && FString(UVSetName) == DefaultUVSetName;
 
             const int32 VertexCount = Mesh->GetPolygonSize(PolygonIndex);
 
@@ -459,7 +508,7 @@ namespace
                 // 원본 탄젠트만 읽는다. 없는 경우의 생성 처리는 아직 구현하지 않았다.
                 FbxVector4 SourceTangent;
 
-                if (Wedge.UVs.Num() > 0 && ReadFbxVectorElement(TangentElement, Wedge.ControlPointIndex, PolygonIndex, PolygonVertexIndex, SourceTangent))
+                if (bUseSourceTangents && Wedge.UVs.Num() > 0 && ReadFbxVectorElement(TangentElement, Wedge.ControlPointIndex, PolygonIndex, PolygonVertexIndex, SourceTangent))
                 {
                     const FVector Normal = Wedge.Normal.GetSafeNormal();
                     FVector Tangent(static_cast<float>(SourceTangent[0]), static_cast<float>(SourceTangent[1]), static_cast<float>(SourceTangent[2]));
