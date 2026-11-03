@@ -36,6 +36,7 @@ public:
 	TUniquePtr<FIndexBuffer> CreateStaticIndexBuffer(const uint32* InIndices, uint32 MaxIndexCount);
 
 	TUniquePtr<FVertexBuffer> CreateDynamicVertexBuffer(uint32 MaxSize, uint32 Stride);
+	TUniquePtr<FVertexBuffer> CreateDefaultVertexBuffer(uint32 BufferSize, uint32 Stride);
 	TUniquePtr<FIndexBuffer> CreateDynamicIndexBuffer(uint32 MaxIndexCount);
 
 	TUniquePtr<FConstantBuffer> CreateConstantBuffer(uint32 BufferSize);

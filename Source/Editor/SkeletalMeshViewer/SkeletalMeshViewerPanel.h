@@ -53,7 +53,7 @@ public:
 	void UpdateBoneGizmoInput(bool bInputEnabled);
 
 	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
-	void RefreshSkeletalPreviewMesh();
+	void RefreshSkeletalPreviewMesh(int32 BoneIndex = INDEX_NONE);
 
 private:
 	const TArray<FMatrix>& GetGlobalPose() const;

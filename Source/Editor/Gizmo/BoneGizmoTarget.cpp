@@ -132,7 +132,7 @@ void FBoneGizmoTarget::EndTransformEdit()
 {
 	if (bEditing)
 	{
-		Viewer->RefreshSkeletalPreviewMesh();
+		Viewer->RefreshSkeletalPreviewMesh(EditingBoneIndex);
 	}
 
 	bEditing = false;
