@@ -334,14 +334,99 @@ void FRenderer::DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, cons
 	RenderCommand::SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	RenderCommand::BindConstantBuffer(DecalCBSlot, DecalCB.get(), EShaderBindFlagBits::Vertex | EShaderBindFlagBits::Pixel);
 
+	// 두 방식의 비용을 같은 구간(드로우 기록부터 GPU 실행까지)으로 잰다
+	FDecalGPUQuery* GPUQuery = BeginDecalGPUQuery();
+	const uint64 StartCycles = FPlatformTime::GetCycles64();
+
 	if (Method == EDecalMethod::Depth)
 		DrawDecalBoxes(Decals, View, Constants, SceneDepth);
 	else
 		DrawDecalReceivers(Decals, View, Constants);
 
+	const double CpuMs = FPlatformTime::ToMilliseconds64(FPlatformTime::GetCycles64() - StartCycles);
+	Stats.DrawCpuMs += (CpuMs - Stats.DrawCpuMs) * 0.1;
+	EndDecalGPUQuery(GPUQuery);
+
 	RenderCommand::SetRasterizerState(ERasterizerState::SolidBack);
 	// 다음 패스가 깊이를 쓰기 가능한 DSV로 다시 꽂을 때 SRV로 남아 있으면 D3D가 강제로 떼므로 먼저 비운다
 	RenderCommand::UnbindShaderResource(DecalSceneDepthSlot, EShaderBindFlagBits::Pixel);
+}
+
+void FRenderer::ReadDecalGPUQueries()
+{
+	ID3D11DeviceContext* Context = RenderCommand::GetContext();
+	FDecalStats& Stats = FDecalStats::Get();
+
+	for (FDecalGPUQuery& Query : DecalGPUQueries)
+	{
+		if (!Query.bPending)
+			continue;
+
+		// 기다리지 않는다. 아직 GPU가 안 끝났으면 다음에 다시 본다
+		D3D11_QUERY_DATA_TIMESTAMP_DISJOINT Disjoint{};
+		if (Context->GetData(Query.Disjoint.Get(), &Disjoint, sizeof(Disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+			continue;
+
+		UINT64 BeginTime = 0, EndTime = 0;
+		D3D11_QUERY_DATA_PIPELINE_STATISTICS Pipeline{};
+		if (Context->GetData(Query.Begin.Get(), &BeginTime, sizeof(BeginTime), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+			Context->GetData(Query.End.Get(), &EndTime, sizeof(EndTime), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+			Context->GetData(Query.Pipeline.Get(), &Pipeline, sizeof(Pipeline), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+			continue;
+
+		Query.bPending = false;
+		Stats.PixelsShaded = Pipeline.PSInvocations;
+
+		// 측정 중 GPU 클럭이 바뀌었으면 시간은 믿을 수 없어 버린다
+		if (Disjoint.Disjoint || Disjoint.Frequency == 0 || EndTime < BeginTime)
+			continue;
+		const double GpuMs = static_cast<double>(EndTime - BeginTime) * 1000.0 / static_cast<double>(Disjoint.Frequency);
+		Stats.DrawGpuMs += (GpuMs - Stats.DrawGpuMs) * 0.1;
+	}
+}
+
+FRenderer::FDecalGPUQuery* FRenderer::BeginDecalGPUQuery()
+{
+	ReadDecalGPUQueries();
+
+	FDecalGPUQuery& Query = DecalGPUQueries[NextDecalGPUQuery];
+	if (Query.bPending)
+		return nullptr;
+
+	if (!Query.Disjoint)
+	{
+		ID3D11Device* Device = RenderCommand::GetDevice();
+		const D3D11_QUERY_DESC DisjointDesc{ D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+		const D3D11_QUERY_DESC TimestampDesc{ D3D11_QUERY_TIMESTAMP, 0 };
+		const D3D11_QUERY_DESC PipelineDesc{ D3D11_QUERY_PIPELINE_STATISTICS, 0 };
+		if (FAILED(Device->CreateQuery(&DisjointDesc, Query.Disjoint.GetAddressOf())) ||
+			FAILED(Device->CreateQuery(&TimestampDesc, Query.Begin.GetAddressOf())) ||
+			FAILED(Device->CreateQuery(&TimestampDesc, Query.End.GetAddressOf())) ||
+			FAILED(Device->CreateQuery(&PipelineDesc, Query.Pipeline.GetAddressOf())))
+		{
+			Query = FDecalGPUQuery{};
+			return nullptr;
+		}
+	}
+
+	ID3D11DeviceContext* Context = RenderCommand::GetContext();
+	Context->Begin(Query.Disjoint.Get());
+	Context->End(Query.Begin.Get());	// 타임스탬프는 End만 호출한다
+	Context->Begin(Query.Pipeline.Get());
+	return &Query;
+}
+
+void FRenderer::EndDecalGPUQuery(FDecalGPUQuery* Query)
+{
+	if (!Query)
+		return;
+
+	ID3D11DeviceContext* Context = RenderCommand::GetContext();
+	Context->End(Query->Pipeline.Get());
+	Context->End(Query->End.Get());
+	Context->End(Query->Disjoint.Get());
+	Query->bPending = true;
+	NextDecalGPUQuery = (NextDecalGPUQuery + 1) % DecalGPUQueryCount;
 }
 
 bool FRenderer::BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, FDecalConstants& Constants, const FMatrix& BoxToWorld)

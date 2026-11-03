@@ -23,6 +23,11 @@ struct FDecalStats
 	uint32 DrawnDecals = 0;		// 데칼 하나에 드로우 콜 하나다
 	uint32 DrawnTriangles = 0;	// Mesh 방식에서 잘라 낸 메시의 삼각형 수
 
+	// 비용. 시간은 프레임마다 흔들려서 지수 평균으로 둔다. GPU 값은 몇 프레임 늦게 들어온다.
+	double DrawCpuMs = 0.0;		// 데칼 드로우를 기록하는 데 쓴 CPU 시간
+	double DrawGpuMs = 0.0;		// 데칼 드로우가 GPU에서 걸린 시간
+	uint64 PixelsShaded = 0;	// 데칼 픽셀 셰이더 실행 수. 스텐실로 일찍 떨어진 픽셀은 빠지고 discard한 픽셀은 들어간다
+
 	// Mesh 방식 빌드 수치. 다시 만든 데칼이 있는 프레임에만 갱신해 마지막 빌드 결과를 남긴다.
 	uint32 RebuiltDecals = 0;
 	uint32 Receivers = 0;			// Broad phase(장면 BVH + AABB)를 통과한 받는 물체 수

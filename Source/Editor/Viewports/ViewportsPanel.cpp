@@ -442,6 +442,8 @@ void FViewportsPanel::DrawStatOverlay(ImDrawList* DrawList, const ImVec2& ViewMi
 		const FDecalStats& Decal = FDecalStats::Get();
 		Lines.Add({std::format("Decal ({})", Decal.bMeshMethod ? "Mesh" : "Deferred"), TitleColor});
 		Lines.Add({std::format("  Drawn {} / {} (draw calls {})", Decal.DrawnDecals, Decal.TotalDecals, Decal.DrawnDecals), ValueColor});
+		Lines.Add({std::format("  Draw CPU {:.3f} ms / GPU {:.3f} ms", Decal.DrawCpuMs, Decal.DrawGpuMs), ValueColor});
+		Lines.Add({std::format("  Pixels shaded {}", Decal.PixelsShaded), ValueColor});
 		if (Decal.bMeshMethod)
 		{
 			Lines.Add({std::format("  Mesh triangles {}", Decal.DrawnTriangles), ValueColor});

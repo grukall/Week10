@@ -227,6 +227,24 @@ private:
 	void DrawDecals(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, const FViewportSettings& Viewport, FTexture2D* SceneDepth, EDecalMethod Method);
 	void DrawDecalBoxes(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants, FTexture2D* SceneDepth);
 	void DrawDecalReceivers(const TArray<FDeferredDecalSceneProxy*>& Decals, const FSceneView& View, FDecalConstants& Constants);
+
+	// stat decal 비용 측정. GPU는 몇 프레임 늦게 끝나므로 슬롯을 돌려 쓰고, 끝난 슬롯만 기다리지 않고 읽는다.
+	struct FDecalGPUQuery
+	{
+		ComPtr<ID3D11Query> Disjoint;	// 타임스탬프 주파수와 측정 중 클럭 변화 여부
+		ComPtr<ID3D11Query> Begin;
+		ComPtr<ID3D11Query> End;
+		ComPtr<ID3D11Query> Pipeline;	// 픽셀 셰이더 실행 수
+		bool bPending = false;
+	};
+	static constexpr uint32 DecalGPUQueryCount = 8;
+	std::array<FDecalGPUQuery, DecalGPUQueryCount> DecalGPUQueries;
+	uint32 NextDecalGPUQuery = 0;
+	// 끝난 측정을 FDecalStats에 옮긴다
+	void ReadDecalGPUQueries();
+	// 쓸 슬롯이 아직 GPU에서 안 끝났으면 이번 측정은 건너뛰고 nullptr를 돌려준다
+	FDecalGPUQuery* BeginDecalGPUQuery();
+	void EndDecalGPUQuery(FDecalGPUQuery* Query);
 	// 데칼마다 바뀌는 상수와 텍스처를 올린다. 숨겼거나 Fade로 다 사라져 그릴 것이 없으면 false
 	bool BindDecal(const FDeferredDecalSceneProxy& Decal, const FSceneView& View, FDecalConstants& Constants, const FMatrix& BoxToWorld);
 	void UpdatePerObjectConstants(const FRenderPacket& RenderPacket, const FMatrix& ViewProjection);
