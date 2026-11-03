@@ -32,6 +32,9 @@ struct FSkeletalMeshDocument
 	bool bPoseDirty = false;
 	bool bModified = false;
 	bool bFitCameraPending = false;
+
+	FEditorCameraState CameraState;
+	bool bHasCameraState = false;
 };
 
 class FSkeletalMeshViewerPanel : public IEditorPanel

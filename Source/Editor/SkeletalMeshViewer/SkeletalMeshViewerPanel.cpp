@@ -951,6 +951,8 @@ void FSkeletalMeshViewerPanel::FitCameraToMesh()
 	Camera.Rotation = FRotator::FindLookAtRotation(Camera.Location, Center).Quaternion();
 
 	SkeletalPreviewClient->SetCamera(Camera, Size);
+	Document->CameraState = Camera;
+	Document->bHasCameraState = true;
 	Document->bFitCameraPending = false;
 	if (SkeletalPreviewFloor)
 	{
@@ -1122,6 +1124,16 @@ void FSkeletalMeshViewerPanel::ActivateDocument(int32 DocumentIndex)
 		BoneGizmo->EndDrag();
 	}
 
+	if (ActiveDocumentIndex != DocumentIndex)
+	{
+		FSkeletalMeshDocument* PreviousDocument = GetActiveDocument();
+		if (PreviousDocument && SkeletalPreviewClient)
+		{
+			PreviousDocument->CameraState = SkeletalPreviewClient->GetCamera();
+			PreviousDocument->bHasCameraState = true;
+		}
+	}
+
 	ActiveDocumentIndex = DocumentIndex;
 	FSkeletalMeshDocument& Document = Documents[DocumentIndex];
 
@@ -1134,7 +1146,12 @@ void FSkeletalMeshViewerPanel::ActivateDocument(int32 DocumentIndex)
 
 	SkeletalPreviewComponent->RefreshMesh(INDEX_NONE);
 
-	if (Document.bFitCameraPending)
+	if (Document.bHasCameraState)
+	{
+		const FVector2 Size = SkeletalPreviewViewport->GetOutputSize();
+		SkeletalPreviewClient->SetCamera(Document.CameraState, Size);
+	}
+	else if (Document.bFitCameraPending)
 	{
 		FitCameraToMesh();
 	}
@@ -1168,7 +1185,12 @@ void FSkeletalMeshViewerPanel::CloseDocument(int32 Index)
 
 	if (bWasActive)
 	{
+		ActiveDocumentIndex = INDEX_NONE;
 		const int32 NewIndex = std::min(Index, Documents.Num() - 1);
 		ActivateDocument(NewIndex);
+	}
+	else if (Index < ActiveDocumentIndex)
+	{
+		--ActiveDocumentIndex;
 	}
 }
