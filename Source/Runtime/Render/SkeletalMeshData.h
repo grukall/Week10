@@ -36,7 +36,7 @@ struct FSkeletalMeshRefBone
 {
     FName Name = NAME_None; // 본 이름
     int32 ParentIndex = -1; // 부모 본
-
+    int32 SubtreeEndIndex = -1; // 자신과 자손의 DFS 구간 끝(미포함): [BoneIndex, SubtreeEndIndex)
     // 부모 본 기준의 Reference Pose 변환 = 부모 본에서 얼마나 떨어져 있는가?
     FMatrix RefLocalMatrix = FMatrix::Identity;
     // 메시의 Bind Pose 공간 → 이 본의 Bind Pose 로컬 공간 변환

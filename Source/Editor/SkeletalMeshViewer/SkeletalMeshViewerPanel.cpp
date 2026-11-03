@@ -109,7 +109,7 @@ void FSkeletalMeshViewerPanel::Tick(float DeltaTime)
 		FitCameraToMesh();
 	if (bPoseDirty)
 	{
-		RefreshSkeletalPreviewMesh();
+		RefreshSkeletalPreviewMesh(INDEX_NONE);
 	}
 }
 
@@ -204,7 +204,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 			if (bTransformChanged && IsValidEditableTransform(EditedTransform))
 			{
 				SetBoneLocalTransform(SelectedBoneIndex, EditedTransform);
-				RefreshSkeletalPreviewMesh();
+				RefreshSkeletalPreviewMesh(SelectedBoneIndex);
 			}
 
 			if (ImGui::Button("Reset Bone"))
@@ -214,7 +214,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 				if (SkeletalPreviewComponent)
 					SkeletalPreviewComponent->SetBoneLocalTransform(SelectedBoneIndex, SelectedBone.RefLocalMatrix);
 				bPoseDirty = true;
-				RefreshSkeletalPreviewMesh();
+				RefreshSkeletalPreviewMesh(SelectedBoneIndex);
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Reset All"))
@@ -227,7 +227,7 @@ void FSkeletalMeshViewerPanel::OnRender()
 				if (SkeletalPreviewComponent)
 					SkeletalPreviewComponent->ResetToReferencePose();
 				bPoseDirty = true;
-				RefreshSkeletalPreviewMesh();
+				RefreshSkeletalPreviewMesh(INDEX_NONE);
 			}
 			
 			if (GlobalPose.IsValidIndex(SelectedBoneIndex))
@@ -782,7 +782,7 @@ void FSkeletalMeshViewerPanel::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 	}
 	bPoseDirty = true;
 	bFitCameraPending = true;
-	RefreshSkeletalPreviewMesh();
+	RefreshSkeletalPreviewMesh(INDEX_NONE);
 	FitCameraToMesh();
 }
 
@@ -806,11 +806,13 @@ void FSkeletalMeshViewerPanel::FitCameraToMesh()
 			FVector(Center.X, Center.Y, Bounds.Min.Z - Radius * 0.02f));
 }
 
-void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh()
+void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh(int32 BoneIndex)
 {
 	if (!SkeletalPreviewComponent || !bPoseDirty)
 		return;
+	if (BoneIndex != INDEX_NONE && !IsBoneValid(BoneIndex))
+		return;
 
-	SkeletalPreviewComponent->RefreshMesh();
+	SkeletalPreviewComponent->RefreshMesh(BoneIndex);
 	bPoseDirty = false;
 }

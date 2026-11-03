@@ -112,6 +112,15 @@ TUniquePtr<FVertexBuffer> FRenderDevice::CreateDynamicVertexBuffer(uint32 MaxSiz
 	return Buffer;
 }
 
+TUniquePtr<FVertexBuffer> FRenderDevice::CreateDefaultVertexBuffer(uint32 BufferSize, uint32 Stride)
+{
+	D3D11_BUFFER_DESC Desc{};
+	Desc.Usage = D3D11_USAGE_DEFAULT;
+	Desc.ByteWidth = BufferSize;
+	Desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	return MakeUnique<FVertexBuffer>(Device.Get(), Desc, Stride);
+}
+
 TUniquePtr<FIndexBuffer> FRenderDevice::CreateDynamicIndexBuffer(uint32 MaxIndexCount)
 {
 	D3D11_BUFFER_DESC Desc = {};

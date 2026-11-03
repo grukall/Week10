@@ -68,6 +68,7 @@ namespace
             FSkeletalMeshRefBone Bone;
             Bone.Name = FName(Imported.Name);
             Bone.ParentIndex = Imported.ParentIndex;
+            Bone.SubtreeEndIndex = BoneIndex + 1;
 
             if (!InvertMatrix(Imported.RefGlobalMatrix, Bone.InverseBindMatrix))
                 return false;
@@ -90,6 +91,20 @@ namespace
                 return false;
             Built.RefBones.Add(std::move(Bone));
         }
+
+        const int32 BoneCount = static_cast<int32>(Built.RefBones.Num());
+
+        for (int32 BoneIndex = BoneCount - 1; BoneIndex >= 0; --BoneIndex)
+        {
+            const FSkeletalMeshRefBone& Bone = Built.RefBones[BoneIndex];
+
+            if (Bone.ParentIndex >= 0)
+            {
+                FSkeletalMeshRefBone& Parent = Built.RefBones[Bone.ParentIndex];
+                Parent.SubtreeEndIndex = std::max(Parent.SubtreeEndIndex,Bone.SubtreeEndIndex);
+            }
+        }
+
         return true;
     }
 

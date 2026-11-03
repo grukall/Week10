@@ -27,6 +27,12 @@ TUniquePtr<FVertexBuffer> RenderCommand::CreateDynamicVertexBuffer(uint32 MaxSiz
 	return RenderDevice->CreateDynamicVertexBuffer(MaxSize, Stride);
 }
 
+TUniquePtr<FVertexBuffer> RenderCommand::CreateDefaultVertexBuffer(uint32 BufferSize, uint32 Stride)
+{
+	assert(RenderDevice);
+	return RenderDevice->CreateDefaultVertexBuffer(BufferSize, Stride);
+}
+
 TUniquePtr<FIndexBuffer> RenderCommand::CreateStaticIndexBuffer(const uint32* InIndices, uint32 MaxIndexCount)
 {
 	assert(RenderDevice);
@@ -126,6 +132,20 @@ void RenderCommand::UpdateBufferData(FBuffer* InBuffer, const void* Data, uint32
 	RenderDevice->GetContext()->Map(Buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource);
 	std::memcpy(MappedResource.pData, Data, DataSize);
 	RenderDevice->GetContext()->Unmap(Buffer, 0);
+}
+
+void RenderCommand::UpdateBufferRegion(FBuffer* InBuffer, uint32 ByteOffset, const void* Data, uint32 DataSize)
+{
+	if (!InBuffer || !InBuffer->GetBuffer() || !Data || DataSize == 0
+		|| ByteOffset > InBuffer->GetBufferSize() || DataSize > InBuffer->GetBufferSize() - ByteOffset)
+		return;
+
+	D3D11_BOX Region{};
+	Region.left = ByteOffset;
+	Region.right = ByteOffset + DataSize;
+	Region.bottom = 1;
+	Region.back = 1;
+	RenderDevice->GetContext()->UpdateSubresource(InBuffer->GetBuffer(), 0, &Region, Data, 0, 0);
 }
 
 void RenderCommand::BindVertexBuffer(const FVertexBuffer* VertexBuffer)
