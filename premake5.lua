@@ -107,6 +107,8 @@ function LinkLuaJIT()
 	filter {}
 
 	links { "lua51" }
+	-- 미리 빌드된 lua51.lib에는 vc140.pdb가 없어 LNK4099 경고가 대량으로 뜬다
+	linkoptions { "/ignore:4099" }
 end
 
 
