@@ -15,6 +15,7 @@
 #include "GameFramework/Actor.h"
 #include "Component/SkeletalMeshComponent.h"
 #include "Asset/FbxImporter/FbxImporter.h"
+#include "Asset/FbxExporter/FbxPoseExporter.h"
 #include "Editor/HitoriEd/EditorFileUtils.h"
 
 namespace
@@ -243,22 +244,6 @@ void FSkeletalMeshViewerPanel::OnRender()
 			if (SkeletalPreviewComponent)
 			{
 				SkeletalPreviewComponent->ResetToReferencePose();
-			}
-			bPoseDirty = true;
-			RefreshSkeletalPreviewMesh();
-		}
-		if (ImGui::Button("Export"))
-		{
-			ExportReboundFbx();
-		}
-
-		ImGui::Separator();
-		if (ImGui::Button("Reset All"))
-		{
-			for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(SkeletalMesh->MeshData.RefBones.Num()); ++BoneIndex)
-			{
-				EditableLocalPose[BoneIndex] = MatrixToTransform(SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix);
-				LocalPoseMatrices[BoneIndex] = SkeletalMesh->MeshData.RefBones[BoneIndex].RefLocalMatrix;
 			}
 			bPoseDirty = true;
 			RefreshSkeletalPreviewMesh();
@@ -875,11 +860,12 @@ void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh()
 
 void FSkeletalMeshViewerPanel::ExportReboundFbx()
 {
-	if (!SkeletalMesh ||
-		LocalPoseMatrices.Num() != SkeletalMesh->MeshData.RefBones.Num())
+	if (!SkeletalMesh
+		|| LocalPoseMatrices.Num() != SkeletalMesh->MeshData.RefBones.Num())
 	{
 		return;
 	}
+
 	FString SourceKey = SkeletalMesh->GetPath();
 	const size_t GroupPosition = SourceKey.rfind("#Group");
 	if (GroupPosition == FString::npos)
@@ -887,6 +873,8 @@ void FSkeletalMeshViewerPanel::ExportReboundFbx()
 		HTR_LOG(Error, "[FBX Export] Invalid asset key: {}", SourceKey);
 		return;
 	}
+	const FString GroupSuffix = SourceKey.substr(GroupPosition);
+
 	SourceKey.resize(GroupPosition);
 	const FString SourcePath = (std::filesystem::path("Assets") / SourceKey).generic_string();
 	const FString DestinationPath = FEditorFileUtils::OpenFbxSaveDialog(SourcePath);
@@ -894,6 +882,7 @@ void FSkeletalMeshViewerPanel::ExportReboundFbx()
 	{
 		return;
 	}
+
 	std::error_code Error;
 	const bool bSameFile = std::filesystem::equivalent(SourcePath, DestinationPath, Error);
 	if (!Error && bSameFile)
@@ -901,10 +890,34 @@ void FSkeletalMeshViewerPanel::ExportReboundFbx()
 		HTR_LOG(Error, "[FBX Export] Source file cannot be overwritten.");
 		return;
 	}
-	if (!FFbxImporter::ExportReboundFbx(SourcePath, DestinationPath, SkeletalMesh->MeshData, LocalPoseMatrices))
+
+	if (!FbxPoseExporter::ExportReboundFbx(SourcePath, DestinationPath, SkeletalMesh->MeshData, LocalPoseMatrices))
 	{
 		HTR_LOG(Error, "[FBX Export] Failed: {}", DestinationPath);
 		return;
 	}
+
 	HTR_LOG(Info, "[FBX Export] Saved: {}", DestinationPath);
+	const std::filesystem::path AssetRootPath = std::filesystem::absolute("Assets").lexically_normal();
+	const std::filesystem::path ExportedAbsolutePath = std::filesystem::absolute(DestinationPath).lexically_normal();
+
+	std::error_code RelativePathError;
+	const std::filesystem::path ExportedRelativePath = std::filesystem::relative(ExportedAbsolutePath, AssetRootPath, RelativePathError);
+	if (RelativePathError || ExportedRelativePath.empty() || *ExportedRelativePath.begin() == "..")
+	{
+		HTR_LOG(Warning, "[FBX Export] Saved outside Assets, so it cannot be opened automatically: {}", DestinationPath);
+		return;
+	}
+
+	const FString ExportedKey = ExportedRelativePath.generic_string();
+	UAssetManager::Get().LoadAsset(ExportedKey, ExportedAbsolutePath.generic_string());
+	USkeletalMesh* ExportedMesh = UAssetManager::GetAssetByPath<USkeletalMesh>(ExportedKey + GroupSuffix);
+	if (!ExportedMesh)
+	{
+		HTR_LOG(Error, "[FBX Export] Saved FBX could not be imported: {}{}", ExportedKey, GroupSuffix);
+		return;
+	}
+
+	SetSkeletalMesh(ExportedMesh);
+	HTR_LOG(Info, "[FBX Export] Opened exported mesh: {}{}", ExportedKey, GroupSuffix);
 }
