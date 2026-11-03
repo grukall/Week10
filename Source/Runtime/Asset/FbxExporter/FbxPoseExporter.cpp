@@ -299,9 +299,6 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         GeometryMatrix.SetS(MeshNode->GetGeometricScaling(FbxNode::eSourcePivot));
         FbxAMatrix MeshEvaluationGlobal = MeshNode->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE) * GeometryMatrix;
 
-        FbxGeometryConverter GeometryConverter(Manager);
-        GeometryConverter.ComputeEdgeSmoothingFromNormals(Mesh);
-
         if (!DeformationEvaluator.ComputeSkinDeformation(BakedControlPoints.data(), FBXSDK_TIME_INFINITE, &MeshEvaluationGlobal, nullptr))
         {
             return Fail(FString("Failed to bake mesh control points: ") + MeshNode->GetName());

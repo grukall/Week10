@@ -850,7 +850,7 @@ void FSkeletalMeshViewerPanel::FitCameraToMesh()
 void FSkeletalMeshViewerPanel::RefreshSkeletalPreviewMesh(int32 BoneIndex)
 {
 	if (!SkeletalPreviewComponent || !bPoseDirty
-		|| (BoneIndex != INDEX_NONE && !IsBoneValid(BoneIndex))
+		|| (BoneIndex != INDEX_NONE && !IsBoneValid(BoneIndex)))
 	{
 		return;
 	}
