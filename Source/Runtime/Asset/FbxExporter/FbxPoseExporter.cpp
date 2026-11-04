@@ -458,6 +458,7 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         Scene->RemovePose(PoseIndex);
         Pose->Destroy();
     }
+
     Manager->CreateMissingBindPoses(Scene);
     bool bFoundValidBindPose = false;
     for (int32 PoseIndex = 0; PoseIndex < Scene->GetPoseCount(); ++PoseIndex)
@@ -467,9 +468,53 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         {
             continue;
         }
+
+        const int32 OriginalEntryCount = Pose->GetCount();
+        for (int32 EntryIndex = 0; EntryIndex < OriginalEntryCount; ++EntryIndex)
+        {
+            FbxNode* EntryNode = Pose->GetNode(EntryIndex);
+            for (FbxNode* Parent = EntryNode ? EntryNode->GetParent() : nullptr;
+                Parent; Parent = Parent->GetParent())
+            {
+                if (Pose->Find(Parent) < 0)
+                {
+                    const auto BoneIt = BoneIndexByNode.find(Parent);
+                    const FbxAMatrix Global = BoneIt != BoneIndexByNode.end()
+                        ? NewFbxGlobalMatrices[BoneIt->second]
+                        : Parent->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE);
+
+                    if (Pose->Add(Parent, FbxMatrix(Global), false) < 0)
+                    {
+                        return Fail(FString("Failed to add bind pose ancestor: ") + Parent->GetName());
+                    }
+                }
+                if (Parent == SceneRoot)
+                {
+                    break;
+                }
+            }
+        }
+
         FbxStatus BindPoseStatus;
         if (!Pose->IsValidBindPose(SceneRoot, 0.0001, &BindPoseStatus))
         {
+            NodeList MissingAncestors;
+            NodeList MissingDeformers;
+            NodeList MissingDeformerAncestors;
+            NodeList WrongMatrices;
+
+            Pose->IsValidBindPoseVerbose(SceneRoot, MissingAncestors, MissingDeformers,
+                MissingDeformerAncestors, WrongMatrices, 0.0001, &BindPoseStatus);
+            const auto LogNodes = [](const char* Category, const NodeList& Nodes)
+            {
+                for (int32 Index = 0; Index < Nodes.GetCount(); ++Index)
+                    HTR_LOG(Error, "[FBX Export] Bind pose {}: {}", Category, Nodes[Index]->GetName());
+            };
+
+            LogNodes("missing ancestor", MissingAncestors);
+            LogNodes("missing deformer", MissingDeformers);
+            LogNodes("missing deformer ancestor", MissingDeformerAncestors);
+            LogNodes("wrong matrix", WrongMatrices);
             return Fail(FString("Generated bind pose is invalid: ") + BindPoseStatus.GetErrorString());
         }
         bFoundValidBindPose = true;
