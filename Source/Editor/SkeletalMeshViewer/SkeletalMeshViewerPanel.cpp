@@ -221,26 +221,19 @@ void FSkeletalMeshViewerPanel::OnRender()
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("Bone Hierarchy");
 		ImGui::Separator();
-		if (ImGui::BeginTabBar("##SkeletalMeshViewer"))
+		
+		if (Document->RootBones.IsEmpty())
 		{
-			if (ImGui::BeginTabItem("Skeleton"))
-			{
-				if (Document->RootBones.IsEmpty())
-				{
-					ImGui::TextDisabled("No root bone.");
-				}
-				else
-				{
-					for (int32 RootBoneIndex : Document->RootBones)
-					{
-						DrawBoneNode(RootBoneIndex);
-					}
-				}
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
+			ImGui::TextDisabled("No root bone.");
 		}
-
+		else
+		{
+			for (int32 RootBoneIndex : Document->RootBones)
+			{
+				DrawBoneNode(RootBoneIndex);
+			}
+		}
+		
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("Bone Transform");
 		ImGui::Separator();
