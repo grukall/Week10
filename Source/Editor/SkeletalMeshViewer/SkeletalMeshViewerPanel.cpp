@@ -310,10 +310,10 @@ void FSkeletalMeshViewerPanel::OnRender()
 			RefreshSkeletalPreviewMesh();
 			Document->bModified = false;
 		}
-		if (ImGui::Button("Export"))
+		/*if (ImGui::Button("Pose Save"))
 		{
 			ExportReboundFbx();
-		}
+		}*/
 
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("Preview Viewport");
