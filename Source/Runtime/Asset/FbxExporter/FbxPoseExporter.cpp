@@ -6,7 +6,6 @@
 #include "Asset/FbxImporter/FbxImporter.h"
 
 #include <fbxsdk.h>
-#include <fbxsdk/utils/fbxdeformationsevaluator.h>
 #include <unordered_map>
 #include <vector>
 #include <cmath>
@@ -47,6 +46,19 @@ namespace
             for (int32 Column = 0; Column < 4; ++Column)
             {
                 Data[Row * 4 + Column] = static_cast<double>(Source.M[Row][Column]);
+            }
+        }
+        return Result;
+    }
+
+    FMatrix ConvertFbxMatrix(const FbxAMatrix& Source)
+    {
+        FMatrix Result;
+        for (int32 Row = 0; Row < 4; ++Row)
+        {
+            for (int32 Column = 0; Column < 4; ++Column)
+            {
+                Result.M[Row][Column] = static_cast<float>(Source.Get(Row, Column));
             }
         }
         return Result;
@@ -176,22 +188,60 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         return Fail("Scene has no animation evaluator.");
     }
 
+    for (FbxNode* BoneNode : BoneNodes)
+    {
+        BoneNode->ResetPivotSet(FbxNode::eSourcePivot);
+        BoneNode->SetTransformationInheritType(FbxTransform::eInheritRSrs);
+        BoneNode->SetRotationActive(true);
+        BoneNode->SetRotationOrder(FbxNode::eSourcePivot, eEulerXYZ);
+    }
+
     for (int32 BoneIndex = 0; BoneIndex < BoneNodes.Num(); ++BoneIndex)
     {
         FbxVector4 Translation;
         FbxVector4 Rotation;
         FbxVector4 Scale;
-        FbxAMatrix TargetGlobalMatrix = NewFbxGlobalMatrices[BoneIndex];
 
-        AnimationEvaluator->ComputeLocalTRSFromGlobal(Translation, Rotation, Scale, BoneNodes[BoneIndex], TargetGlobalMatrix, FBXSDK_TIME_INFINITE, FbxNode::eSourcePivot, false, true);
+        const int32 ParentBoneIndex = MeshData.RefBones[BoneIndex].ParentIndex;
+        const bool bDirectBoneParent = ParentBoneIndex >= 0
+            && BoneNodes[BoneIndex]->GetParent() == BoneNodes[ParentBoneIndex];
+        const bool bDirectSceneRoot = ParentBoneIndex < 0
+            && BoneNodes[BoneIndex]->GetParent() == SceneRoot;
+
+        if (bDirectBoneParent || bDirectSceneRoot)
+        {
+            const FbxAMatrix TargetLocalMatrix = ConvertEngineMatrix(LocalPoseMatrices[BoneIndex]);
+            Translation = TargetLocalMatrix.GetT();
+            Rotation = TargetLocalMatrix.GetR();
+            Scale = TargetLocalMatrix.GetS();
+        }
+        else
+        {
+            FbxAMatrix TargetGlobalMatrix = NewFbxGlobalMatrices[BoneIndex];
+            AnimationEvaluator->ComputeLocalTRSFromGlobal(Translation, Rotation, Scale, BoneNodes[BoneIndex], TargetGlobalMatrix, FBXSDK_TIME_INFINITE, FbxNode::eSourcePivot, false, true);
+        }
         BoneNodes[BoneIndex]->LclTranslation.Set(FbxDouble3(Translation[0], Translation[1], Translation[2]));
         BoneNodes[BoneIndex]->LclRotation.Set(FbxDouble3(Rotation[0], Rotation[1], Rotation[2]));
         BoneNodes[BoneIndex]->LclScaling.Set(FbxDouble3(Scale[0], Scale[1], Scale[2]));
         AnimationEvaluator->Reset();
     }
+
     for (int32 BoneIndex = 0; BoneIndex < BoneNodes.Num(); ++BoneIndex)
     {
-        NewFbxGlobalMatrices[BoneIndex] = BoneNodes[BoneIndex]->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE);
+        const FbxAMatrix ActualGlobal = BoneNodes[BoneIndex]->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE);
+        for (int32 Row = 0; Row < 4; ++Row)
+        {
+            for (int32 Column = 0; Column < 4; ++Column)
+            {
+                const double Expected = NewEngineGlobalMatrices[BoneIndex].M[Row][Column];
+                const double Actual = ActualGlobal.Get(Row, Column);
+                if (!std::isfinite(Actual) || std::fabs(Expected - Actual) > 0.0001 * (1.0 + std::fabs(Expected)))
+                {
+                    return Fail("FBX node transform does not match the edited pose.");
+                }
+            }
+        }
+        NewFbxGlobalMatrices[BoneIndex] = ActualGlobal;
     }
 
     std::vector<FbxNode*> NodesToVisit;
@@ -287,29 +337,78 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
             BakedControlPoints[ControlPointIndex] = OriginalControlPoints[ControlPointIndex];
         }
 
-        FbxDeformationsEvaluator DeformationEvaluator;
-        if (!DeformationEvaluator.Init(MeshNode, Mesh))
-        {
-            return Fail(FString("Failed to initialize mesh deformation: ") + MeshNode->GetName());
-        }
-
         FbxAMatrix GeometryMatrix;
         GeometryMatrix.SetT(MeshNode->GetGeometricTranslation(FbxNode::eSourcePivot));
         GeometryMatrix.SetR(MeshNode->GetGeometricRotation(FbxNode::eSourcePivot));
         GeometryMatrix.SetS(MeshNode->GetGeometricScaling(FbxNode::eSourcePivot));
-        FbxAMatrix MeshEvaluationGlobal = MeshNode->EvaluateGlobalTransform(FBXSDK_TIME_INFINITE) * GeometryMatrix;
 
-        if (!DeformationEvaluator.ComputeSkinDeformation(BakedControlPoints.data(), FBXSDK_TIME_INFINITE, &MeshEvaluationGlobal, nullptr))
+        // mesh bind -> inverse bone bind -> edited bone -> mesh-local
+        std::vector<FVector> WeightedPoints(static_cast<size_t>(ControlPointCount), FVector::ZeroVector);
+        std::vector<double> WeightSums(static_cast<size_t>(ControlPointCount), 0.0);
+
+        for (int32 SkinIndex = 0; SkinIndex < SkinCount; ++SkinIndex)
         {
-            return Fail(FString("Failed to bake mesh control points: ") + MeshNode->GetName());
+            FbxSkin* Skin = static_cast<FbxSkin*>(Mesh->GetDeformer(SkinIndex, FbxDeformer::eSkin));
+            for (int32 ClusterIndex = 0; ClusterIndex < Skin->GetClusterCount(); ++ClusterIndex)
+            {
+                FbxCluster* Cluster = Skin->GetCluster(ClusterIndex);
+                if (!Cluster || Cluster->GetControlPointIndicesCount() == 0)
+                    continue;
+
+                const int32 BoneIndex = BoneIndexByNode.at(Cluster->GetLink());
+                FbxAMatrix MeshBind;
+                FbxAMatrix BoneBind;
+
+                Cluster->GetTransformMatrix(MeshBind);
+                Cluster->GetTransformLinkMatrix(BoneBind);
+                const FMatrix MeshToBind = ConvertFbxMatrix(MeshBind * GeometryMatrix);
+                const FMatrix SourceBoneBind = ConvertFbxMatrix(BoneBind);
+                const FMatrix CachedBindIdentity = SourceBoneBind * MeshData.RefBones[BoneIndex].InverseBindMatrix;
+
+                for (int32 Row = 0; Row < 4; ++Row)
+                {
+                    for (int32 Column = 0; Column < 4; ++Column)
+                    {
+                        if (!std::isfinite(CachedBindIdentity.M[Row][Column]) ||
+                            std::fabs(CachedBindIdentity.M[Row][Column] - (Row == Column ? 1.0f : 0.0f)) > 0.001f)
+                        {
+                            return Fail(FString("Source FBX bind differs from loaded mesh; reimport source: ") + Cluster->GetLink()->GetName());
+                        }
+                    }
+                }
+
+                const FMatrix BakeMatrix = MeshToBind * MeshData.RefBones[BoneIndex].InverseBindMatrix 
+                    * NewEngineGlobalMatrices[BoneIndex] * MeshToBind.Inverse();
+                const int* PointIndices = Cluster->GetControlPointIndices();
+                const double* Weights = Cluster->GetControlPointWeights();
+
+                for (int32 InfluenceIndex = 0; InfluenceIndex < Cluster->GetControlPointIndicesCount(); ++InfluenceIndex)
+                {
+                    const int32 PointIndex = PointIndices[InfluenceIndex];
+                    const double Weight = Weights[InfluenceIndex];
+
+                    if (PointIndex < 0 || PointIndex >= ControlPointCount || !std::isfinite(Weight) || Weight < 0.0)
+                    {
+                        return Fail("Invalid skin influence during bake.");
+                    }
+
+                    const FbxVector4& Point = OriginalControlPoints[PointIndex];
+                    WeightedPoints[PointIndex] += BakeMatrix.TransformPosition(FVector(
+                        static_cast<float>(Point[0]), static_cast<float>(Point[1]), static_cast<float>(Point[2]))) * static_cast<float>(Weight);
+                    WeightSums[PointIndex] += Weight;
+                }
+            }
         }
 
         for (int32 ControlPointIndex = 0; ControlPointIndex < ControlPointCount; ++ControlPointIndex)
         {
+            if (WeightSums[ControlPointIndex] > 0.0)
+            {
+                const FVector Point = WeightedPoints[ControlPointIndex] / static_cast<float>(WeightSums[ControlPointIndex]);
+                BakedControlPoints[ControlPointIndex] = FbxVector4(Point.X, Point.Y, Point.Z);
+            }
             Mesh->SetControlPointAt(BakedControlPoints[ControlPointIndex], ControlPointIndex);
         }
-
-        //Mesh->GenerateNormals(true, false);
         
         if (!Mesh->GenerateTangentsDataForAllUVSets(true))
         {
