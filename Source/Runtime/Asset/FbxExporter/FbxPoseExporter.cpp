@@ -86,7 +86,6 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
     FbxManager* Manager = FbxManager::Create();
     if (!Manager)
     {
-        HTR_LOG(Error, "[FBX Export] Failed to create FbxManager.");
         return false;
     }
     const auto Fail = [&](const FString& Message)
@@ -123,16 +122,12 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
     }
     if (!Importer->Import(Scene))
     {
-        const FString ErrorMessage = FString("Failed to import source FBX: ") + Importer->GetStatus().GetErrorString();
         Importer->Destroy();
-        return Fail(ErrorMessage);
+        return Fail("Failed to import source FBX");
     }
+
     Importer->Destroy();
     FbxNode* SceneRoot = Scene->GetRootNode();
-    if (!SceneRoot)
-    {
-        return Fail("Source FBX has no scene root.");
-    }
 
     FFbxImporter::NormalizeScene(Scene);
 
@@ -152,35 +147,24 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         {
             return Fail(FString("Bone has no source node path: ") + Bone.Name.ToString());
         }
+
         FbxNode* BoneNode = FindNodeBySourcePath(SceneRoot, Bone.SourceNodePath);
-        if (!BoneNode)
-        {
-            return Fail(FString("Bone node was not found in source FBX: ") + Bone.SourceNodePath);
-        }
         if (Bone.ParentIndex < -1 || Bone.ParentIndex >= BoneIndex)
         {
             return Fail(FString("Bone has an invalid parent index: ") + Bone.Name.ToString());
         }
+
         FMatrix NewGlobalMatrix = LocalPoseMatrices[BoneIndex];
         if (Bone.ParentIndex >= 0)
         {
             NewGlobalMatrix = NewGlobalMatrix * NewEngineGlobalMatrices[Bone.ParentIndex];
         }
+
         BoneNodes[BoneIndex] = BoneNode;
         NewEngineGlobalMatrices[BoneIndex] = NewGlobalMatrix;
         NewFbxGlobalMatrices[BoneIndex] = ConvertEngineMatrix(NewGlobalMatrix);
         BoneIndexByNode[BoneNode] = BoneIndex;
     }
-
-    // 기존 애니메이션 삭제 블록이 있던 위치에 추가
-    FbxAnimStack* EvaluationStack = FbxAnimStack::Create(Scene, "RebindEvaluationStack");
-    FbxAnimLayer* EvaluationLayer = FbxAnimLayer::Create(Scene, "RebindEvaluationLayer");
-    if (!EvaluationStack || !EvaluationLayer)
-    {
-        return Fail("Failed to create temporary animation evaluation context.");
-    }
-    EvaluationStack->AddMember(EvaluationLayer);
-    Scene->SetCurrentAnimationStack(EvaluationStack);
 
     FbxAnimEvaluator* AnimationEvaluator = Scene->GetAnimationEvaluator();
     if (!AnimationEvaluator)
@@ -218,8 +202,10 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         else
         {
             FbxAMatrix TargetGlobalMatrix = NewFbxGlobalMatrices[BoneIndex];
-            AnimationEvaluator->ComputeLocalTRSFromGlobal(Translation, Rotation, Scale, BoneNodes[BoneIndex], TargetGlobalMatrix, FBXSDK_TIME_INFINITE, FbxNode::eSourcePivot, false, true);
+            AnimationEvaluator->ComputeLocalTRSFromGlobal(Translation, Rotation, Scale, BoneNodes[BoneIndex], 
+                TargetGlobalMatrix, FBXSDK_TIME_INFINITE, FbxNode::eSourcePivot, false, true);
         }
+
         BoneNodes[BoneIndex]->LclTranslation.Set(FbxDouble3(Translation[0], Translation[1], Translation[2]));
         BoneNodes[BoneIndex]->LclRotation.Set(FbxDouble3(Rotation[0], Rotation[1], Rotation[2]));
         BoneNodes[BoneIndex]->LclScaling.Set(FbxDouble3(Scale[0], Scale[1], Scale[2]));
@@ -273,6 +259,7 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
             {
                 continue;
             }
+
             for (int32 ClusterIndex = 0; ClusterIndex < Skin->GetClusterCount(); ++ClusterIndex)
             {
                 FbxCluster* Cluster = Skin->GetCluster(ClusterIndex);
@@ -280,6 +267,7 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
                 {
                     continue;
                 }
+
                 if (BoneIndexByNode.contains(Cluster->GetLink()))
                 {
                     bUsesEditedSkeleton = true;
@@ -304,7 +292,7 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         const int32 ControlPointCount = Mesh->GetControlPointsCount();
         if (ControlPointCount <= 0)
         {
-            return Fail(FString("Mesh has no control points: ") + MeshNode->GetName());
+            return Fail("Mesh has no control points.");
         }
 
         const int32 SkinCount = Mesh->GetDeformerCount(FbxDeformer::eSkin);
@@ -323,6 +311,7 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
                 {
                     continue;
                 }
+
                 if (!Cluster->GetLink() || !BoneIndexByNode.contains(Cluster->GetLink()))
                 {
                     return Fail(FString("Mesh has a cluster outside the edited skeleton: ") + MeshNode->GetName());
@@ -342,7 +331,6 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
         GeometryMatrix.SetR(MeshNode->GetGeometricRotation(FbxNode::eSourcePivot));
         GeometryMatrix.SetS(MeshNode->GetGeometricScaling(FbxNode::eSourcePivot));
 
-        // mesh bind -> inverse bone bind -> edited bone -> mesh-local
         std::vector<FVector> WeightedPoints(static_cast<size_t>(ControlPointCount), FVector::ZeroVector);
         std::vector<double> WeightSums(static_cast<size_t>(ControlPointCount), 0.0);
 
@@ -353,14 +341,17 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
             {
                 FbxCluster* Cluster = Skin->GetCluster(ClusterIndex);
                 if (!Cluster || Cluster->GetControlPointIndicesCount() == 0)
+                {
                     continue;
+                }
 
                 const int32 BoneIndex = BoneIndexByNode.at(Cluster->GetLink());
+
                 FbxAMatrix MeshBind;
                 FbxAMatrix BoneBind;
-
                 Cluster->GetTransformMatrix(MeshBind);
                 Cluster->GetTransformLinkMatrix(BoneBind);
+
                 const FMatrix MeshToBind = ConvertFbxMatrix(MeshBind * GeometryMatrix);
                 const FMatrix SourceBoneBind = ConvertFbxMatrix(BoneBind);
                 const FMatrix CachedBindIdentity = SourceBoneBind * MeshData.RefBones[BoneIndex].InverseBindMatrix;
@@ -393,8 +384,8 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
                     }
 
                     const FbxVector4& Point = OriginalControlPoints[PointIndex];
-                    WeightedPoints[PointIndex] += BakeMatrix.TransformPosition(FVector(
-                        static_cast<float>(Point[0]), static_cast<float>(Point[1]), static_cast<float>(Point[2]))) * static_cast<float>(Weight);
+                    WeightedPoints[PointIndex] += BakeMatrix.TransformPosition(FVector(static_cast<float>(Point[0]), 
+                        static_cast<float>(Point[1]), static_cast<float>(Point[2]))) * static_cast<float>(Weight);
                     WeightSums[PointIndex] += Weight;
                 }
             }
@@ -425,17 +416,18 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
                 {
                     continue;
                 }
+
                 const auto BoneIndexIterator = BoneIndexByNode.find(Cluster->GetLink());
                 if (BoneIndexIterator == BoneIndexByNode.end())
                 {
                     continue;
                 }
+
                 Cluster->SetTransformLinkMatrix(NewFbxGlobalMatrices[BoneIndexIterator->second]);
             }
         }
     }
 
-    // TargetMeshNodes 처리 루프가 완전히 끝난 다음, 기존 bind pose 삭제 코드 전에 추가
     Scene->SetCurrentAnimationStack(nullptr);
     while (Scene->GetSrcObjectCount<FbxAnimStack>() > 0)
     {
@@ -534,6 +526,7 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
             return Fail(FString("Failed to create destination directory: ") + PathError.message());
         }
     }
+
     FbxExporter* Exporter = FbxExporter::Create(Manager, "ReboundExporter");
     if (!Exporter)
     {
@@ -541,10 +534,10 @@ bool FbxPoseExporter::ExportReboundFbx(const FString& SourcePath, const FString&
     }
     if (!Exporter->Initialize(AbsoluteDestinationPath.string().c_str(), -1, Manager->GetIOSettings()))
     {
-        const FString ErrorMessage = FString("Failed to initialize exporter: ") + Exporter->GetStatus().GetErrorString();
         Exporter->Destroy();
-        return Fail(ErrorMessage);
+        return Fail("Failed to initialize exporter");
     }
+
     const bool bExported = Exporter->Export(Scene);
     if (!bExported)
     {
