@@ -964,6 +964,19 @@ namespace
 					bChanged = true;
 				}
 			}
+			else if (Property.Name == "DecalNormalResponse" && Cast<UPrimitiveComponent>(Object))
+			{
+				// EDecalNormalResponse 순서와 같다.
+				const char* Items[] = { "Replace", "Blend (RNM)" };
+				int Selected = static_cast<int>(Cast<UPrimitiveComponent>(Object)->GetDecalNormalResponse());
+				if (ImGui::Combo(Label.c_str(), &Selected, Items, IM_ARRAYSIZE(Items)))
+				{
+					*static_cast<int*>(ValuePtr) = Selected;
+					bChanged = true;
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Replace: decal normal covers this surface.\nBlend: decal bumps sit on top of this surface's normal map.");
+			}
 			else if (Property.Name == "BlendType" && Cast<UDecalComponent>(Object))
 			{
 				// EDecalBlendType 순서와 같다.

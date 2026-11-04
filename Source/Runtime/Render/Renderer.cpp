@@ -247,7 +247,7 @@ void FRenderer::UploadPerObjectConstants()
 	for (uint32 Index = 0; Index < Count; ++Index)
 	{
 		FRenderPacket& P = RenderPackets[Index];
-		WriteObjectSlot(Dest, Index, GetPacketWorld(P), GetPacketNormalMatrix(P), P.Proxy && P.Proxy->ReceivesShadow());
+		WriteObjectSlot(Dest, Index, GetPacketWorld(P), GetPacketNormalMatrix(P), P.Proxy && P.Proxy->ReceivesShadow(), P.Proxy && P.Proxy->BlendsDecalNormal());
 		P.Slot = Index;
 	}
 
@@ -646,7 +646,7 @@ void FRenderer::DrawStaticGroups(ESceneMeshPass Pass)
 			else
 			{
 				RenderCommand::BindConstantBuffer(2, PerObjectCB.get(), EShaderBindFlagBits::Vertex);
-				UpdatePerObjectConstants(Item.Proxy->GetLocalToWorld(), Item.Proxy->GetNormalMatrix(), Item.Proxy->ReceivesShadow());
+				UpdatePerObjectConstants(Item.Proxy->GetLocalToWorld(), Item.Proxy->GetNormalMatrix(), Item.Proxy->ReceivesShadow(), Item.Proxy->BlendsDecalNormal());
 			}
 			RenderCommand::DrawIndexed(Item.IndexCount, Item.StartIndex);
 		}
@@ -1048,16 +1048,18 @@ void FRenderer::UpdatePerObjectConstants(const FRenderPacket& RenderPacket, cons
 	// rp.Transform 과 Camera VP 행렬 곱
 	// 행렬곱의 결과 (MVP Matrix) Constant Buffer 업데이트 필요
 
-	UpdatePerObjectConstants(GetPacketWorld(RenderPacket), GetPacketNormalMatrix(RenderPacket), RenderPacket.Proxy && RenderPacket.Proxy->ReceivesShadow());
+	UpdatePerObjectConstants(GetPacketWorld(RenderPacket), GetPacketNormalMatrix(RenderPacket),
+		RenderPacket.Proxy && RenderPacket.Proxy->ReceivesShadow(), RenderPacket.Proxy && RenderPacket.Proxy->BlendsDecalNormal());
 }
 
-void FRenderer::UpdatePerObjectConstants(const FMatrix& World, const FMatrix& NormalMatrix, bool bReceiveShadow)
+void FRenderer::UpdatePerObjectConstants(const FMatrix& World, const FMatrix& NormalMatrix, bool bReceiveShadow, bool bBlendDecalNormal)
 {
 	FPerObjectConstants Constants;
 
 	Constants.World = World;
 	Constants.NormalMatrix = NormalMatrix;
 	Constants.bReceiveShadow = bReceiveShadow ? 1u : 0u;
+	Constants.bBlendDecalNormal = bBlendDecalNormal ? 1u : 0u;
 
 	RenderCommand::UpdateBufferData(PerObjectCB.get(), &Constants);
 }

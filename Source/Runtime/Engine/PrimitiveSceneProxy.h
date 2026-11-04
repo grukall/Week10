@@ -29,6 +29,8 @@ public:
     bool CastsShadow() const { return bCastShadow; }
     bool ReceivesShadow() const { return bReceiveShadow; }
 	bool ReceivesDecal() const { return bReceiveDecal; }
+	// 데칼 노멀을 표면 노멀맵 위에 RNM으로 얹을지. false면 덮는다
+	bool BlendsDecalNormal() const { return bBlendDecalNormal; }
     bool IsVisible() const { return bVisible; }
     uint8 GetLODCount() const { return RenderState ? RenderState->LODCount : 1; }
     const FMeshRenderState* GetRenderState() const { return RenderState.get(); }
@@ -54,4 +56,5 @@ private:
     bool bCastShadow = true;
     bool bReceiveShadow = true;
     bool bReceiveDecal = true;
+    bool bBlendDecalNormal = false;
 };

@@ -8,6 +8,15 @@
 #include "Collision/HitResult.h"
 #include "Core/Delegates/Delegate.h"
 
+// 데칼 노멀을 이 물체의 노멀과 어떻게 섞을지. DecalNormalResponse에 저장하는 값이며 에디터 콤보 순서와 같다.
+enum class EDecalNormalResponse : uint32
+{
+	// 데칼 노멀이 덮인 만큼 표면 노멀을 대신한다(언리얼 DBuffer 기본). 금속 판처럼 두꺼운 데칼에 맞다.
+	Replace,
+	// 표면 노멀맵 위에 데칼 노멀을 RNM으로 얹는다. 페인트, 균열처럼 표면 요철을 따라가야 하는 데칼에 맞다.
+	Blend,
+};
+
 class FPrimitiveSceneProxy;
 class AActor;
 class UShapeComponent;
@@ -35,6 +44,7 @@ class UPrimitiveComponent :public USceneComponent
 		PROPERTY(bCastShadow)
 		PROPERTY(bReceiveShadow)
 		PROPERTY(bRecieveDecal)
+		PROPERTY(DecalNormalResponse)
 		FUNCTION(GetRenderMesh)
 		FUNCTION(GetNumMaterials)
 		FUNCTION(GetMaterial)
@@ -77,6 +87,8 @@ public:
 	void SetReceiveShadow(bool bValue) { bReceiveShadow = bValue; MarkRenderStateDirty(); }
 	bool ReceivesDecal() const { return bRecieveDecal; }
 	void SetReceiveDecal(bool bValue) { bRecieveDecal = bValue; MarkRenderStateDirty(); }
+	EDecalNormalResponse GetDecalNormalResponse() const { return DecalNormalResponse == static_cast<uint32>(EDecalNormalResponse::Blend) ? EDecalNormalResponse::Blend : EDecalNormalResponse::Replace; }
+	void SetDecalNormalResponse(EDecalNormalResponse Value) { DecalNormalResponse = static_cast<uint32>(Value); MarkRenderStateDirty(); }
 	virtual void PostEditChangeProperty(const FProperty& Property) override;
 
 	bool IsVisible() const { return bVisible; }
@@ -136,6 +148,10 @@ protected:
 
 	//true면 데칼이 이 프리미티브 위에 그려질 수 있다.
 	bool bRecieveDecal = true;
+
+	// 데칼 노멀을 받는 방식. 노멀맵은 이 물체의 머티리얼만 알아서, 합치는 방법도 받는 쪽이 정한다(언리얼 Decal Response와 같은 자리).
+	// 리플렉션이 enum을 몰라 정수로 저장한다. 값은 EDecalNormalResponse 순서다.
+	uint32 DecalNormalResponse = 0;
 
 	// 도형 크기처럼 판정 결과가 바뀌는 값을 고친 자식 클래스도 다음 Tick 갱신을 예약할 수 있게 연다.
 	void MarkOverlapsDirty();

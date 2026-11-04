@@ -87,6 +87,7 @@ struct FPSInput
     float2 UV : TEXCOORD0;
     float3 WorldPosition : TEXCOORD1;
     nointerpolation uint ReceiveShadow : TEXCOORD4;
+    nointerpolation uint BlendDecalNormal : TEXCOORD5;
 #if USE_NORMAL_MAP
     float3 Tangent : TANGENT;
     int BitangentSign : BITANGENT_SIGN;
@@ -119,7 +120,8 @@ cbuffer PerObjectConstants : register(b2)
     matrix World;
     matrix NormalMatrix; // World의 역전치
     uint bReceiveShadow;
-    uint3 ObjectPadding;
+    uint bBlendDecalNormal; // 1이면 데칼 노멀을 표면 노멀맵 위에 RNM으로 얹는다. 0이면 덮는다
+    uint2 ObjectPadding;
 };
 
 cbuffer LightingConstants : register(b3)
@@ -852,6 +854,7 @@ FPSInput mainVS(FVSInput Input)
 #endif
     Output.UV = Input.UV;
     Output.ReceiveShadow = bReceiveShadow;
+    Output.BlendDecalNormal = bBlendDecalNormal;
 #if GOURAUD
     float3 N = normalize(Output.Normal);
     float3 V = normalize(CameraPosition - Output.WorldPosition);
@@ -901,13 +904,37 @@ float4 mainPS(FPSInput Input) : SV_TARGET
     float3 WorldNormal = Normal;
 #endif
 #if VIEWMODE == VIEWMODE_LIT
-    // 데칼 노멀은 0에서 시작해 알파 블렌드로 쌓였으므로 RGB에 이미 덮인 정도가 곱해져 있다.
-    // 표면 노멀을 덮이지 않은 만큼 남기고 더하면 lerp와 같다.
+    // 데칼 노멀을 받는 방식은 물체(PrimitiveComponent::DecalNormalResponse)가 정한다
     if (bOpaque)
     {
         float4 DecalNormal = DBufferB.Load(int3(Input.Position.xy, 0));
         if (DecalNormal.a > 0.0f)
+        {
+#if USE_NORMAL_MAP
+            if (Input.BlendDecalNormal != 0u)
+            {
+                // 데칼 노멀은 기하 노멀(정점 노멀) 기준으로 만들어져, 평평한 데칼이면 기하 노멀과 같다.
+                // 메시 TBN으로 탄젠트 공간에 되돌리면 (0, 0, 1) 근처의 디테일 노멀이 되고,
+                // 표면 노멀맵(베이스) 위에 RNM으로 얹으면 두 요철이 다 남는다.
+                // mul(TBN, v)는 행마다 내적이라 월드 → 탄젠트 변환이다(TBN은 직교 정규라 전치가 역행렬)
+    
+                float3 Detail = normalize(mul(TBN, normalize(DecalNormal.rgb / DecalNormal.a)));
+                float3 Base = TextureNormal;
+    
+                // RNM(Reoriented Normal Mapping): 디테일을 (0, 0, 1)에서 베이스 쪽으로 회전시킨다
+                float3 t = Base + float3(0.0f, 0.0f, 1.0f);
+                float3 u = Detail * float3(-1.0f, -1.0f, 1.0f);
+                float3 Combined = normalize(mul(t * dot(t, u) / t.z - u, TBN));
+    
+                // 덮인 정도만큼 표면 노멀맵만의 결과에서 합친 결과로 옮겨 간다
+                WorldNormal = normalize(lerp(normalize(WorldNormal), Combined, DecalNormal.a));
+            }
+            else
+#endif
+            // 데칼 노멀은 0에서 시작해 알파 블렌드로 쌓였으므로 RGB에 이미 덮인 정도가 곱해져 있다.
+            // 표면 노멀을 덮이지 않은 만큼 남기고 더하면 lerp와 같다.
             WorldNormal = normalize(normalize(WorldNormal) * (1.0f - DecalNormal.a) + DecalNormal.rgb);
+        }
     }
 #endif
 

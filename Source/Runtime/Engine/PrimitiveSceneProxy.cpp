@@ -45,6 +45,7 @@ void FPrimitiveSceneProxy::UpdateRenderState()
     bCastShadow = Component->CastsShadow();
     bReceiveShadow = Component->ReceivesShadow();
     bReceiveDecal = Component->ReceivesDecal();
+    bBlendDecalNormal = Component->GetDecalNormalResponse() == EDecalNormalResponse::Blend;
     UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component);
     if (StaticMeshComponent) Mesh = StaticMeshComponent->GetStaticMesh();
     if (Mesh != PreviousMesh)
