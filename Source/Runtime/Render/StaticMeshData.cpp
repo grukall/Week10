@@ -196,6 +196,7 @@ void FStaticMeshData::BuildTriangleBVH()
 			.V0 = V0,
 			.Edge1 = V1 - V0,
 			.Edge2 = V2 - V0,
+			.FirstIndex = static_cast<uint32>(i),
 		};
 
 		Element.Bounds.Min.X = std::min({ V0.X, V1.X, V2.X });

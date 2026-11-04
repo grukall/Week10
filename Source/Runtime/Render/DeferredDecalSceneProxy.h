@@ -14,6 +14,14 @@ class UMaterial;
 class FPrimitiveSceneProxy;
 class FVertexBuffer;
 
+// Mesh 방식 데칼 정점. DecalMesh.hlsl의 VSInput(POSITION, NORMAL)과 순서·크기가 같아야 한다.
+// 노멀은 받는 메시의 정점 노멀이라, 데칼 노멀맵을 박스가 아니라 표면 기준으로 얹을 수 있다.
+struct FDecalMeshVertex
+{
+    FVector Position;
+    FVector Normal;
+};
+
 struct FDeferredDecalSceneProxy
 {
 public:
@@ -38,7 +46,7 @@ public:
     FCollisionBox OBB;                // Narrow Phase: ShapeCollision::BoxBox
     FAABB         Bounds;             // Broad Phase: Scene BVH Query
 
-    TArray<FVector> MeshVertices;                     // 잘라 낸 삼각형 목록 (월드 위치, 3개씩)
+    TArray<FDecalMeshVertex> MeshVertices;            // 잘라 낸 삼각형 목록 (월드 위치와 받는 면의 월드 노멀, 3개씩)
     TUniquePtr<FVertexBuffer> MeshVertexBuffer;       // 위를 올린 GPU 버퍼
     bool bMeshDirty = true;
 

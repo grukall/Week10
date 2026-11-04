@@ -282,6 +282,7 @@ void FRenderer::RenderDecalsToDBuffer(const TArray<FDeferredDecalSceneProxy*>& D
 	DBufferDesc.Texture = DBuffer;
 	DBufferDesc.ClearValue.ColorClearValue = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
 	PassInfo.ColorRenderTargets.Add(DBufferDesc);
+
 	// 노멀은 두 번째 타깃(SV_Target1)이다. 블렌드는 0번 타깃 설정을 같이 쓰므로 노멀도 덮인 만큼 쌓인다.
 	FRenderingDesc NormalDesc{};
 	NormalDesc.Texture = DBufferNormal;

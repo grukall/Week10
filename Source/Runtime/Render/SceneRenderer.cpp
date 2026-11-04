@@ -657,18 +657,19 @@ namespace
         return true;
     }
 
-	int32 ClipPolygonByPlane(const FVector* In, int32 Count, FVector* Out, int32 Axis, float Sign)
+	// Position은 데칼 공간, Normal은 월드 공간이다. 교점을 만들 때 둘을 같은 비율로 보간한다.
+	int32 ClipPolygonByPlane(const FDecalMeshVertex* In, int32 Count, FDecalMeshVertex* Out, int32 Axis, float Sign)
 	{
 		// 평면 Sign * P[Axis] = 1 하나로 볼록 다각형을 자른다. 안쪽은 Sign * P[Axis] <= 1 이다.
 		// d = 1 - Sign * P[Axis] 는 평면까지 남은 거리로, 0 이상이면 안이다.
 		int32 OutCount = 0;
 		for (int32 i = 0; i < Count; ++i)
 		{
-			const FVector& Current = In[i];
-			const FVector& Next = In[(i + 1) % Count];
+			const FDecalMeshVertex& Current = In[i];
+			const FDecalMeshVertex& Next = In[(i + 1) % Count];
 
-			const float DCurrent = 1.0f - Sign * Current[Axis];
-			const float DNext = 1.0f - Sign * Next[Axis];
+			const float DCurrent = 1.0f - Sign * Current.Position[Axis];
+			const float DNext = 1.0f - Sign * Next.Position[Axis];
 			const bool bCurrentInside = DCurrent >= 0.0f;
 			const bool bNextInside = DNext >= 0.0f;
 
@@ -682,7 +683,9 @@ namespace
 			if (bCurrentInside != bNextInside)
 			{
 				const float T = DCurrent / (DCurrent - DNext);
-				Out[OutCount++] = Current + (Next - Current) * T;
+				Out[OutCount++] = {
+					Current.Position + (Next.Position - Current.Position) * T,
+					Current.Normal + (Next.Normal - Current.Normal) * T };
 			}
 		}
 		return OutCount;
@@ -690,13 +693,13 @@ namespace
 
 	// 데칼 공간 삼각형을 단위 박스 6면으로 잘라, 남은 볼록 다각형을 부채꼴 삼각형으로 나눠 OutVertices 뒤에 3개씩 붙인다.
 	// 잘려서 아무것도 안 남으면 false 를 반환한다.
-	bool TriangleClipingInUnitBox(const FVector(&V)[3], TArray<FVector>& OutVertices)
+	bool TriangleClipingInUnitBox(const FDecalMeshVertex(&V)[3], TArray<FDecalMeshVertex>& OutVertices)
 	{
 		// 삼각형은 평면 하나를 지날 때마다 꼭짓점이 최대 1개 늘어서 6면 뒤에는 최대 9개다
-		FVector BufferA[9] = { V[0], V[1], V[2] };
-		FVector BufferB[9];
-		FVector* In = BufferA;
-		FVector* Out = BufferB;
+		FDecalMeshVertex BufferA[9] = { V[0], V[1], V[2] };
+		FDecalMeshVertex BufferB[9];
+		FDecalMeshVertex* In = BufferA;
+		FDecalMeshVertex* Out = BufferB;
 		int32 Count = 3;
 
 		for (int32 Axis = 0; Axis < 3; ++Axis)
@@ -736,7 +739,7 @@ void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDefe
 		Decal->MeshVertices.Reset();
 
 		// 잘라 낸 삼각형을 데칼 공간에 모은 뒤 마지막에 월드로 되돌린다
-		TArray<FVector> DecalSpaceVertices;
+		TArray<FDecalMeshVertex> DecalSpaceVertices;
         const FAABB& DecalBounds = Decal->Bounds;
 		Scene.BVH.Query(
 			[&](const FBox& Box)
@@ -791,6 +794,9 @@ void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDefe
 
 				//2.2 Mesh Local 삼각형 BVH에서 그 박스와 겹치는 삼각형을 찾는다
                 const FMatrix LocalToDecal = Proxy->GetLocalToWorld() * Decal->WorldToDecal;
+                // 노멀은 위치와 달리 월드 행렬의 역전치로 옮겨야 비균일 스케일에서도 면에 수직으로 남는다
+                const FMatrix LocalToWorldNormal = WorldToLocal.GetTransposed();
+                const FStaticMeshData& MeshData = Mesh->MeshData;
                 Mesh->MeshData.TriangleBVH->Query(
                     [&](const FBox& Node)
                     {
@@ -810,22 +816,30 @@ void FSceneRenderer::BuildDecalReceivers(const FScene& Scene, const TArray<FDefe
 						++Build.TrianglesPassedSAT;
 
                         //3. Clip: 박스 6면으로 잘라 남은 삼각형을 DecalSpaceVertices에 3개씩 붙인다
-						TriangleClipingInUnitBox(V, DecalSpaceVertices);
+						// 받는 메시의 정점 노멀을 월드로 옮겨 같이 넘긴다. 잘린 교점의 노멀은 위치와 같은 비율로 보간된다
+						FDecalMeshVertex Clip[3];
+						for (int32 k = 0; k < 3; ++k)
+						{
+							const FVector& LocalNormal = MeshData.Vertices[MeshData.Indices[Tri.FirstIndex + k]].Normal;
+							Clip[k] = { V[k], LocalToWorldNormal.TransformVector(LocalNormal).GetSafeNormal() };
+						}
+						TriangleClipingInUnitBox(Clip, DecalSpaceVertices);
                     });
 			});
 
 		Build.TrianglesClipped += static_cast<uint32>(DecalSpaceVertices.Num() / 3);
 
-		// 데칼 공간 → 월드. 셰이더는 ViewProjection만 곱하고 UV는 ShadeDecal이 월드 위치로 계산한다
+		// 위치만 데칼 공간 → 월드로 되돌린다. 노멀은 처음부터 월드다
+		// 셰이더는 ViewProjection만 곱하고 UV는 ShadeDecal이 월드 위치로 계산한다
 		Decal->MeshVertices.Reserve(DecalSpaceVertices.Num());
-		for (const FVector& V : DecalSpaceVertices)
-			Decal->MeshVertices.Add(Decal->DecalToWorld.TransformPosition(V));
+		for (const FDecalMeshVertex& V : DecalSpaceVertices)
+			Decal->MeshVertices.Add({ Decal->DecalToWorld.TransformPosition(V.Position), V.Normal });
 
 		Decal->MeshVertexBuffer.reset();
 		if (!Decal->MeshVertices.IsEmpty())
 		{
 			Decal->MeshVertexBuffer = RenderCommand::CreateStaticVertexBuffer(Decal->MeshVertices.GetData(),
-				static_cast<uint32>(Decal->MeshVertices.Num() * sizeof(FVector)), sizeof(FVector));
+				static_cast<uint32>(Decal->MeshVertices.Num() * sizeof(FDecalMeshVertex)), sizeof(FDecalMeshVertex));
 		}
 	}
 

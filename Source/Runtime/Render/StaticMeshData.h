@@ -37,6 +37,7 @@ struct FMeshTriangleElement
 	FVector Edge1; // V1 - V0
 	FVector Edge2; // V2 - V0
 	FBox Bounds;
+	uint32 FirstIndex = 0; // Indices에서 이 삼각형이 시작하는 위치. 정점 노멀 같은 속성을 찾을 때 쓴다
 };
 
 struct FStaticMeshData
